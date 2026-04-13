@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>💼 Salary Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body,#root{min-height:100%;background:#060a10;}
+  body{font-family:'Syne',sans-serif;-webkit-tap-highlight-color:transparent;}
+  ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-thumb{background:#1a2840;border-radius:2px;}
+  input[type=time]{background:#0f1828;border:1px solid #1a2840;color:#dde9f7;padding:10px 12px;border-radius:10px;font-family:'DM Mono',monospace;font-size:14px;width:100%;outline:none;-webkit-appearance:none;appearance:none;}
+  input[type=time]:focus,input[type=number]:focus{border-color:#f59e0b!important;box-shadow:0 0 0 3px rgba(245,158,11,0.12);}
+  input[type=number]{-moz-appearance:textfield;}input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
+  button{font-family:'Syne',sans-serif;transition:opacity 0.15s,transform 0.1s;}
+  button:active{opacity:0.8;transform:scale(0.97);}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useMemo,useEffect,useCallback,useRef} = React;
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const WORK_START = 9*60, WORK_END = 19*60, SAT_END = 13*60+30;
+const LUNCH_MAX = 60, LATE_MIN = 15, LEAVE_MIN = 120, NOON = 12*60, MIN_LUNCH_GAP = 30;
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+// ─── Colors ───────────────────────────────────────────────────────────────────
+const C = {
+  bg:"#060a10", card:"#0c1220", card2:"#0f1828", border:"#1a2840",
+  text:"#94a3b8", textBright:"#dde9f7", textDim:"#3d5a80",
+  amber:"#f59e0b", green:"#34d399", red:"#f87171", blue:"#60a5fa",
+  orange:"#fb923c", teal:"#2dd4bf", purple:"#a78bfa",
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const t2m = t => { if(!t||!String(t).includes(":")) return null; const [h,m]=String(t).split(":").map(Number); return h*60+m; };
+const m2t = m => { if(m==null) return ""; const h=Math.floor(m/60),mn=m%60; return `${String(h).padStart(2,"0")}:${String(mn).padStart(2,"0")}`; };
+const fmtMins = m => { if(!m||m===0) return "0m"; const h=Math.floor(Math.abs(m)/60),mn=Math.abs(m)%60; return h>0?(mn>0?`${h}h ${mn}m`:`${h}h`):`${mn}m`; };
+const fmtINR = n => "₹"+Math.round(n).toLocaleString("en-IN");
+const getDays = (y,mo) => new Date(y,mo+1,0).getDate();
+const getDow = (y,mo,d) => new Date(y,mo,d).getDay();
+const getMonthMins = (y,mo,holidays=[]) => {
+  let full=0,sat=0;
+  for(let d=1;d<=getDays(y,mo);d++){
+    const w=getDow(y,mo,d);
+    const key=`${y}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    if(w===0||holidays.includes(key)) continue;
+    w===6?sat++:full++;
+  }
+  return full*540+sat*270;
+};
+
+// ─── Legacy entry converter ───────────────────────────────────────────────────
+// Converts old {pi,po,lo,li} format to new {punches:[...]} format
+function legacyToNew(entry) {
+  if (!entry || entry.punches) return entry;
+  const p = [];
+  if (entry.pi) p.push(entry.pi);
+  if (entry.lo && entry.lo > entry.pi) p.push(entry.lo);
+  if (entry.li && entry.li > (entry.lo||entry.pi)) p.push(entry.li);
+  if (entry.po && entry.po > (entry.li||entry.lo||entry.pi)) p.push(entry.po);
+  return { ...entry, punches: p.filter(Boolean) };
+}
+
+// ─── Core Day Calculation ─────────────────────────────────────────────────────
+function calcDay(rawEntry, y, mo, d) {
+  const w = getDow(y,mo,d), isSun=w===0, isSat=w===6;
+  const scheduled = isSun?0:isSat?270:540;
+  const dayEnd = isSat?SAT_END:WORK_END;
+  const base = {isSun,isSat,scheduled,worked:0,deducted:0,lm:0,ot:0,otMins:0,
+                mLate:0,lunchGap:0,lunchOver:0,personalMins:0,gaps:[],lunchIdx:-1,status:"empty"};
+
+  if (isSun) return {...base, status:"sunday"};
+  if (!rawEntry || rawEntry.absent) return {...base, status:"absent"};
+
+  const entry = legacyToNew(rawEntry);
+  const punches = (entry.punches||[]).map(t2m).filter(x=>x!==null).sort((a,b)=>a-b);
+  if (punches.length === 0) return {...base, status:"absent"};
+
+  const firstPunch = punches[0];
+  const lastPunch  = punches[punches.length-1];
+
+  // ── Morning late ──
+  const mLate = Math.max(0, firstPunch - WORK_START);
+
+  // ── Build OUT→IN gaps (punches alternate IN/OUT/IN/OUT...) ──
+  // Gap i lives between punches[2i+1] (OUT) and punches[2i+2] (IN)
+  const gaps = [];
+  for (let i=1; i+1<punches.length; i+=2) {
+    gaps.push({ outTime: punches[i], inTime: punches[i+1], duration: punches[i+1]-punches[i] });
+  }
+
+  // ── Smart Lunch Detection ──
+  // First gap that: starts AFTER 12:00 PM AND duration >= MIN_LUNCH_GAP (30 min)
+  let lunchIdx = -1;
+  for (let i=0; i<gaps.length; i++) {
+    if (gaps[i].outTime >= NOON && gaps[i].duration >= MIN_LUNCH_GAP) { lunchIdx=i; break; }
+  }
+  const lunchGap  = lunchIdx>=0 ? gaps[lunchIdx].duration : 0;
+  const lunchOver = lunchIdx>=0 ? Math.max(0, lunchGap-LUNCH_MAX) : 0;
+
+  // ── Personal time (every non-lunch gap) ──
+  let personalMins = 0;
+  for (let i=0; i<gaps.length; i++) { if(i!==lunchIdx) personalMins += gaps[i].duration; }
+
+  // ── Late marks & deductions ──
+  let lm=0, deducted=0, status="present";
+
+  if (mLate >= LEAVE_MIN) {
+    if (entry.lr) { status="leaverep"; deducted+=mLate; }
+    else return {...base, status:"absent", mLate, deducted:mLate, gaps, lunchIdx};
+  } else {
+    deducted += mLate;
+    if (mLate >= LATE_MIN) lm++;
+  }
+
+  deducted += lunchOver + personalMins;
+  if (lunchOver >= LATE_MIN) lm = Math.min(2, lm+1);
+  lm = Math.min(2, lm);
+
+  const worked  = Math.max(0, scheduled-deducted);
+  const otMins  = lastPunch > dayEnd ? lastPunch-dayEnd : 0;
+  const ot      = (entry.otA===true && otMins>0) ? otMins : 0;
+
+  return {isSun,isSat,scheduled,worked,deducted,lm,ot,otMins,
+          mLate,lunchGap,lunchOver,personalMins,gaps,lunchIdx,status};
+}
+
+// ─── Shared UI Components ─────────────────────────────────────────────────────
+const Card = ({children,style}) => <div style={{background:C.card,borderRadius:16,padding:16,marginBottom:8,border:`1px solid ${C.border}`,...style}}>{children}</div>;
+const SecTitle = ({children}) => <div style={{fontSize:11,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:1,padding:"14px 4px 8px"}}>{children}</div>;
+const StatRow = ({l,v,c,last}) => (
+  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderBottom:last?"none":`1px solid ${C.border}33`}}>
+    <span style={{fontSize:13,color:C.textDim}}>{l}</span>
+    <span style={{fontSize:14,fontWeight:700,color:c||C.textBright,fontFamily:"'DM Mono',monospace"}}>{v}</span>
+  </div>
+);
+const Label = ({children}) => <div style={{fontSize:11,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:0.8,marginBottom:6}}>{children}</div>;
+const Pill = ({label,active,color,onClick}) => (
+  <button onClick={onClick} style={{flex:1,padding:"9px 6px",borderRadius:10,border:`1px solid ${active?(color||C.amber)+"55":C.border}`,background:active?(color||C.amber)+"20":"transparent",color:active?(color||C.amber):C.textDim,cursor:"pointer",fontWeight:600,fontSize:12}}>{label}</button>
+);
+
+// ─── Day Entry Modal ──────────────────────────────────────────────────────────
+function DayModal({yr,mo,day,entry,onSave,onClose}) {
+  const dow=getDow(yr,mo,day), isSat=dow===6, isSun=dow===0;
+  const dateStr = new Date(yr,mo,day).toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
+  const isToday = new Date().toDateString()===new Date(yr,mo,day).toDateString();
+
+  // Convert legacy entry to new format for editing
+  const initEntry = legacyToNew(entry);
+  const [absent, setAbsent] = useState(initEntry?.absent||false);
+  const [punches, setPunches] = useState(initEntry?.punches||[""]);
+  const [lr, setLr] = useState(initEntry?.lr||false);
+  const [otA, setOtA] = useState(initEntry?.otA??null);
+
+  const ds = useMemo(()=>calcDay(absent?{absent:true}:{punches:punches.filter(p=>p&&p.length>0),lr,otA},yr,mo,day),[punches,absent,lr,otA,yr,mo,day]);
+
+  const addPunch = () => setPunches(p=>[...p,""]);
+  const removePunch = i => setPunches(p=>p.filter((_,idx)=>idx!==i));
+  const setPunch = (i,v) => setPunches(p=>{const n=[...p];n[i]=v;return n;});
+
+  const validPunches = punches.filter(p=>p&&p.length>0);
+  const dayEnd = isSat ? SAT_END : WORK_END;
+  const lastPunchMins = validPunches.length ? t2m(validPunches[validPunches.length-1]) : 0;
+  const hasOT = !absent && lastPunchMins > dayEnd;
+
+  const handleSave = () => {
+    if (absent) { onSave({absent:true}); return; }
+    onSave({punches: validPunches, lr, otA: hasOT ? otA : null});
+  };
+
+  const overlay = {position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center",backdropFilter:"blur(4px)"};
+  const sheet = {background:C.card,borderRadius:"24px 24px 0 0",width:"100%",maxWidth:480,maxHeight:"92vh",overflowY:"auto",padding:"8px 20px 40px",border:`1px solid ${C.border}`};
+
+  if (isSun) return (
+    <div style={overlay} onClick={onClose}>
+      <div style={sheet} onClick={e=>e.stopPropagation()}>
+        <div style={{width:40,height:4,background:C.border,borderRadius:2,margin:"12px auto 20px"}}/>
+        <div style={{textAlign:"center",padding:"20px 0 32px"}}>
+          <div style={{fontSize:48,marginBottom:12}}>🌴</div>
+          <div style={{fontSize:18,fontWeight:700,color:C.textBright,marginBottom:6}}>{dateStr}</div>
+          <div style={{fontSize:14,color:C.textDim}}>Sunday — Full Day Holiday</div>
+        </div>
+        <button style={{width:"100%",padding:15,borderRadius:14,border:"none",cursor:"pointer",background:C.amber,color:"#000",fontWeight:800,fontSize:15}} onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div style={sheet} onClick={e=>e.stopPropagation()}>
+        <div style={{width:40,height:4,background:C.border,borderRadius:2,margin:"12px auto 20px"}}/>
+
+        {/* Header */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18}}>
+          <div>
+            <div style={{fontSize:16,fontWeight:700,color:C.textBright}}>{dateStr}</div>
+            <div style={{fontSize:11,color:C.textDim,marginTop:2}}>
+              {isSat?"Saturday — Half Day (9:00–13:30)":"Weekday — Full Day (9:00–19:00)"}
+              {isToday&&<span style={{color:C.amber,marginLeft:6}}>• Today</span>}
+            </div>
+          </div>
+          {entry&&<button onClick={()=>onSave(null)} style={{background:C.red+"18",color:C.red,border:`1px solid ${C.red}33`,borderRadius:8,padding:"6px 12px",fontSize:12,fontWeight:600,cursor:"pointer"}}>🗑️ Clear</button>}
+        </div>
+
+        {/* Present / Absent */}
+        <div style={{display:"flex",gap:8,marginBottom:16}}>
+          <Pill label="✅ Present" active={!absent} onClick={()=>setAbsent(false)}/>
+          <Pill label="❌ Absent" active={absent} color={C.red} onClick={()=>setAbsent(true)}/>
+        </div>
+
+        {!absent && <>
+          {/* Punch Times */}
+          <Label>Punch Times</Label>
+          <div style={{background:C.bg,borderRadius:12,padding:12,marginBottom:14}}>
+            {punches.map((p,i)=>{
+              const isIn = i%2===0;
+              const isLunchOut = ds.lunchIdx>=0 && i===ds.lunchIdx*2+1;
+              const isLunchIn  = ds.lunchIdx>=0 && i===ds.lunchIdx*2+2;
+              return (
+                <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                  <div style={{width:52,flexShrink:0}}>
+                    <div style={{fontSize:9,fontWeight:700,color:isLunchOut||isLunchIn?C.orange:isIn?C.green:C.red,textTransform:"uppercase",letterSpacing:0.5}}>
+                      {isLunchOut?"🍽 OUT":isLunchIn?"🍽 IN":isIn?"IN":"OUT"}
+                    </div>
+                    <div style={{fontSize:10,color:C.textDim,fontFamily:"'DM Mono'"}}>P{i+1}</div>
+                  </div>
+                  <input type="time" value={p} onChange={e=>setPunch(i,e.target.value)} style={{flex:1}}/>
+                  {punches.length>1&&<button onClick={()=>removePunch(i)} style={{background:C.red+"18",color:C.red,border:`1px solid ${C.red}33`,borderRadius:8,width:32,height:32,cursor:"pointer",fontWeight:700,fontSize:16,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>×</button>}
+                </div>
+              );
+            })}
+            <button onClick={addPunch} style={{width:"100%",padding:"8px",borderRadius:10,border:`1px dashed ${C.border}`,background:"transparent",color:C.textDim,cursor:"pointer",fontWeight:600,fontSize:13,marginTop:4}}>
+              + Add Punch
+            </button>
+          </div>
+
+          {/* 2hr Late Warning */}
+          {ds.mLate>=LEAVE_MIN&&<div style={{background:C.orange+"18",border:`1px solid ${C.orange}33`,borderRadius:12,padding:14,marginBottom:14}}>
+            <div style={{fontSize:13,color:C.orange,fontWeight:700,marginBottom:8}}>⚠️ {fmtMins(ds.mLate)} Late — More Than 2 Hours!</div>
+            <div style={{fontSize:11,color:C.textDim,marginBottom:10}}>No late mark will be applied — only time deducted. You may file a leave report:</div>
+            <div style={{display:"flex",gap:8}}>
+              <Pill label="Auto Deduct" active={!lr} onClick={()=>setLr(false)}/>
+              <Pill label="📋 Leave Report Filed" active={lr} color={C.orange} onClick={()=>setLr(true)}/>
+            </div>
+          </div>}
+
+          {/* OT Banner */}
+          {hasOT&&<div style={{background:C.blue+"15",border:`1px solid ${C.blue}33`,borderRadius:12,padding:14,marginBottom:14}}>
+            <div style={{fontSize:13,color:C.blue,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {isSat?"1:30 PM":"7:00 PM"}</div>
+            <div style={{fontSize:11,color:C.textDim,marginBottom:10}}>Overtime is approval-based. Did you get it approved?</div>
+            <div style={{display:"flex",gap:8}}>
+              <Pill label="✓ Approved" active={otA===true} color={C.green} onClick={()=>setOtA(true)}/>
+              <Pill label="✗ Not Approved" active={otA===false} color={C.red} onClick={()=>setOtA(false)}/>
+            </div>
+          </div>}
+
+          {/* Smart Analysis Card */}
+          {validPunches.length>0&&<div style={{background:C.card2,borderRadius:14,padding:14,marginBottom:16,border:`1px solid ${C.border}`}}>
+            <div style={{fontSize:10,color:C.textDim,fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:12}}>Smart Analysis</div>
+
+            {/* Punch timeline */}
+            <div style={{marginBottom:12}}>
+              {ds.gaps.map((g,i)=>{
+                const isLunch = i===ds.lunchIdx;
+                return (
+                  <div key={i} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                    <div style={{width:8,height:8,borderRadius:"50%",background:isLunch?C.orange:C.red,flexShrink:0}}/>
+                    <div style={{fontSize:11,color:isLunch?C.orange:C.textDim}}>
+                      <span style={{fontFamily:"'DM Mono'",color:C.textBright}}>{m2t(g.outTime)}→{m2t(g.inTime)}</span>
+                      {" "}({fmtMins(g.duration)})
+                      {" "}<span style={{fontWeight:700}}>{isLunch?"🍽 Lunch":`Personal Time`}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+              {[
+                ["Morning Late", ds.mLate>0?`-${fmtMins(ds.mLate)}`:"On Time ✓", ds.mLate>=LATE_MIN?C.red:ds.mLate>0?C.orange:C.green],
+                ["Lunch Over",   ds.lunchOver>0?`-${fmtMins(ds.lunchOver)}`:"OK ✓", ds.lunchOver>=LATE_MIN?C.red:ds.lunchOver>0?C.orange:C.green],
+                ["Personal",     ds.personalMins>0?`-${fmtMins(ds.personalMins)}`:"None", ds.personalMins>0?C.red:C.green],
+                ["Late Marks",   `${ds.lm} 🔴`, ds.lm>0?C.red:C.green],
+                ["Hours Worked", fmtMins(ds.worked), C.teal],
+                ["OT",           ds.ot>0?`+${fmtMins(ds.ot)}`:"—", C.blue],
+              ].map(([l,v,c])=>(
+                <div key={l} style={{background:C.bg,borderRadius:8,padding:"8px 6px",textAlign:"center"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:c,fontFamily:"'DM Mono'",marginBottom:2}}>{v}</div>
+                  <div style={{fontSize:9,color:C.textDim,textTransform:"uppercase",letterSpacing:0.3}}>{l}</div>
+                </div>
+              ))}
+            </div>
+          </div>}
+        </>}
+
+        <button onClick={handleSave} style={{width:"100%",padding:15,borderRadius:14,border:"none",cursor:"pointer",background:C.amber,color:"#000",fontWeight:800,fontSize:15}}>
+          💾 Save Entry
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Month Stats Calculator ───────────────────────────────────────────────────
+function calcMonthStats(yr,mo,att,salary,holidays=[]) {
+  const days = getDays(yr,mo);
+  const totalMins = getMonthMins(yr,mo,holidays);
+  const perMin = totalMins>0 ? salary/totalMins : 0;
+  const dayEq = totalMins/540;
+  const oneDaySal = dayEq>0 ? salary/dayEq : 0;
+  let worked=0,ded=0,lm=0,ot=0,absences=0,personalTotal=0;
+  const dr=[];
+  for(let d=1;d<=days;d++){
+    const key=`${yr}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    const e = att[key]||null;
+    const ds = calcDay(e,yr,mo,d);
+    dr.push({d,...ds});
+    if(!ds.isSun){ worked+=ds.worked;ded+=ds.deducted;lm+=ds.lm;ot+=ds.ot;personalTotal+=ds.personalMins; if(ds.status==="absent")absences++; }
+  }
+  const usedLeaves=Math.min(2,absences), unusedLeaves=Math.max(0,2-absences);
+  const lmDedDays=lm/10, lmDed=lmDedDays*oneDaySal;
+  const leavePay=usedLeaves*540*perMin, unusedLeavePay=unusedLeaves*540*perMin;
+  const est=Math.max(0, worked*perMin + ot*perMin + leavePay + unusedLeavePay - lmDed);
+  return {totalMins,perMin,oneDaySal,worked,ded,lm,ot,absences,usedLeaves,unusedLeaves,lmDedDays,lmDed,leavePay,unusedLeavePay,est,personalTotal,dr,days};
+}
+
+// ─── Month View ───────────────────────────────────────────────────────────────
+function MonthView({yr,mo,stats,getE,openDay,now}) {
+  const totalDays=getDays(yr,mo), firstDow=getDow(yr,mo,1);
+  const todayD=(now.getFullYear()===yr&&now.getMonth()===mo)?now.getDate():null;
+
+  const getDotColor = d => {
+    const ds=stats.dr.find(r=>r.d===d);
+    if(!ds||ds.status==="sunday"||ds.status==="empty") return "transparent";
+    if(ds.lm>0) return C.red;
+    if(ds.status==="absent") return C.orange;
+    return C.green;
+  };
+  const getCellBg = d => {
+    const ds=stats.dr.find(r=>r.d===d);
+    if(!ds) return "transparent";
+    if(ds.status==="absent") return C.red+"12";
+    if(ds.status==="present"||ds.status==="leaverep") return C.green+"10";
+    if(ds.status==="empty"&&getDow(yr,mo,d)!==0) return C.card2;
+    return "transparent";
+  };
+
+  return (
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,padding:"12px 12px 0"}}>
+        {[{l:"Worked",v:fmtMins(stats.worked),c:C.green},{l:"Deducted",v:fmtMins(stats.ded),c:C.red},{l:"LM",v:stats.lm,c:stats.lm>=10?C.red:stats.lm>=5?C.orange:C.textBright},{l:"OT",v:fmtMins(stats.ot),c:C.blue}].map(({l,v,c})=>(
+          <div key={l} style={{background:C.card,borderRadius:12,padding:"10px 6px",border:`1px solid ${C.border}`,textAlign:"center"}}>
+            <div style={{fontSize:14,fontWeight:700,color:c,fontFamily:"'DM Mono'"}}>{v}</div>
+            <div style={{fontSize:9,color:C.textDim,marginTop:2,fontWeight:700,textTransform:"uppercase",letterSpacing:0.3}}>{l}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{margin:"10px 12px 0",background:`linear-gradient(135deg,${C.amber}22,${C.amber}08)`,border:`1px solid ${C.amber}33`,borderRadius:14,padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{fontSize:12,color:C.amber+"aa",fontWeight:700}}>Estimated Salary</div>
+        <div style={{fontSize:22,fontWeight:800,color:C.amber,fontFamily:"'DM Mono'"}}>{fmtINR(stats.est)}</div>
+      </div>
+
+      <div style={{padding:"14px 12px 0"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3}}>
+          {["Su","Mo","Tu","We","Th","Fr","Sa"].map(d=><div key={d} style={{textAlign:"center",padding:"6px 0",fontSize:10,fontWeight:700,color:d==="Su"?C.red+"88":C.textDim}}>{d}</div>)}
+          {Array(firstDow).fill(null).map((_,i)=><div key={"e"+i}/>)}
+          {Array(totalDays).fill(null).map((_,i)=>{
+            const d=i+1,dow=getDow(yr,mo,d),isSun=dow===0,isSat=dow===6,isToday=d===todayD;
+            const ds=stats.dr.find(r=>r.d===d);
+            return (
+              <div key={d} onClick={()=>!isSun&&openDay(d)} style={{minHeight:52,borderRadius:10,padding:"6px 4px 4px",background:getCellBg(d),border:isToday?`2px solid ${C.amber}`:`1px solid ${C.border}22`,cursor:isSun?"default":"pointer",display:"flex",flexDirection:"column",alignItems:"center",opacity:isSun?0.3:1}}>
+                <div style={{fontSize:13,fontWeight:700,color:isToday?C.amber:isSun?C.red:C.textBright,lineHeight:1}}>{d}</div>
+                {isSat&&<div style={{fontSize:8,color:C.textDim,marginTop:1}}>½</div>}
+                <div style={{width:5,height:5,borderRadius:"50%",background:getDotColor(d),marginTop:"auto"}}/>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:12,padding:"10px 16px 0",flexWrap:"wrap"}}>
+        {[[C.green,"Present"],[C.red,"Absent/LM"],[C.orange,"Leave Rep."],[C.amber,"Today"]].map(([c,l])=>(
+          <div key={l} style={{display:"flex",alignItems:"center",gap:4}}>
+            <div style={{width:6,height:6,borderRadius:"50%",background:c}}/>
+            <span style={{fontSize:10,color:C.textDim}}>{l}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{fontSize:11,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:0.8,padding:"14px 16px 8px"}}>Recent Entries</div>
+      {stats.dr.filter(d=>d.status!=="sunday"&&d.status!=="empty").slice(-6).reverse().map(ds=>{
+        const e=legacyToNew(getE(yr,mo,ds.d));
+        const sc={present:C.green,absent:C.red,leaverep:C.orange};
+        return (
+          <div key={ds.d} onClick={()=>openDay(ds.d)} style={{background:C.card,margin:"3px 12px",borderRadius:12,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",border:`1px solid ${C.border}`,borderLeft:`3px solid ${sc[ds.status]||C.textDim}`}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:600,color:C.textBright}}>{new Date(yr,mo,ds.d).toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short"})}</div>
+              <div style={{fontSize:11,color:C.textDim,marginTop:2}}>
+                {e?.punches?.length>0 ? e.punches.map((p,i)=>`P${i+1}:${p}`).join(" · ") : "No punches"}
+              </div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:13,fontWeight:700,fontFamily:"'DM Mono'",color:ds.worked>0?C.teal:C.red}}>{fmtMins(ds.worked)}</div>
+              {ds.lm>0&&<div style={{fontSize:10,color:C.red}}>🔴 ×{ds.lm}</div>}
+              {ds.ot>0&&<div style={{fontSize:10,color:C.blue}}>+{fmtMins(ds.ot)} OT</div>}
+              {ds.personalMins>0&&<div style={{fontSize:10,color:C.orange}}>⏸ {fmtMins(ds.personalMins)}</div>}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{height:24}}/>
+    </div>
+  );
+}
+
+// ─── Stats View ───────────────────────────────────────────────────────────────
+function StatsView({stats,salary}) {
+  const ppm=stats.perMin;
+  return (
+    <div style={{padding:"0 0 40px"}}>
+      <div style={{margin:"16px 12px",background:"linear-gradient(135deg,#1a1200,#0d0f1a)",border:`1px solid ${C.amber}55`,borderRadius:20,padding:"24px 20px",textAlign:"center",position:"relative",overflow:"hidden"}}>
+        <div style={{position:"absolute",inset:0,background:`radial-gradient(circle at 50% 0%,${C.amber}15,transparent 70%)`,pointerEvents:"none"}}/>
+        <div style={{fontSize:11,color:C.amber+"99",fontWeight:700,letterSpacing:1.5,textTransform:"uppercase",marginBottom:10}}>Estimated Salary This Month</div>
+        <div style={{fontSize:42,fontWeight:800,color:C.amber,fontFamily:"'DM Mono'",letterSpacing:-1}}>{fmtINR(stats.est)}</div>
+        <div style={{fontSize:12,color:C.textDim,marginTop:6}}>of {fmtINR(salary)} CTC · ₹{ppm.toFixed(4)}/min</div>
+        <div style={{display:"flex",gap:8,marginTop:16}}>
+          {[["Worked",fmtMins(stats.worked),C.green],["Deducted",fmtMins(stats.ded),C.red],["OT Earned",fmtMins(stats.ot),C.blue]].map(([l,v,c])=>(
+            <div key={l} style={{background:"rgba(255,255,255,0.05)",borderRadius:10,padding:"8px 12px",flex:1}}>
+              <div style={{fontSize:14,fontWeight:700,color:c,fontFamily:"'DM Mono'"}}>{v}</div>
+              <div style={{fontSize:9,color:C.textDim,marginTop:2}}>{l}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{padding:"0 12px"}}>
+        <SecTitle>🕐 Time Breakdown</SecTitle>
+        <Card>
+          <StatRow l="Total Worked Minutes" v={fmtMins(stats.worked)} c={C.green}/>
+          <StatRow l="Total Deducted" v={fmtMins(stats.ded)} c={C.red}/>
+          <StatRow l="Personal Time (Total)" v={fmtMins(stats.personalTotal)} c={C.orange}/>
+          <StatRow l="OT Approved" v={fmtMins(stats.ot)} c={C.blue} last/>
+        </Card>
+
+        <SecTitle>🔴 Late Mark Status</SecTitle>
+        <Card>
+          <StatRow l="Total Late Marks" v={`${stats.lm} marks`} c={stats.lm>=10?C.red:stats.lm>=5?C.orange:C.green}/>
+          <StatRow l="Salary Cut (Days)" v={`${stats.lmDedDays.toFixed(2)} days`} c={C.red}/>
+          <StatRow l="Deduction Amount" v={fmtINR(stats.lmDed)} c={C.red} last/>
+          {stats.lm>0&&<div style={{marginTop:12,background:C.card2,borderRadius:10,padding:10}}>
+            <div style={{fontSize:10,color:C.textDim,marginBottom:6}}>Progress to next 1-day cut (every 10 marks)</div>
+            <div style={{background:C.bg,borderRadius:4,height:8,overflow:"hidden"}}>
+              <div style={{background:C.orange,height:"100%",width:`${Math.min(100,(stats.lm%10||10)*10)}%`,borderRadius:4,transition:"width 0.5s"}}/>
+            </div>
+            <div style={{fontSize:10,color:C.textDim,marginTop:4}}>{stats.lm%10||10}/10 in current cycle · {Math.floor(stats.lm/10)} cycle(s) complete</div>
+          </div>}
+        </Card>
+
+        <SecTitle>🌴 Leave Summary</SecTitle>
+        <Card>
+          <StatRow l="Paid Leaves Per Month" v="2 days"/>
+          <StatRow l="Leaves Taken" v={`${stats.absences} days`} c={stats.absences>2?C.red:C.green}/>
+          <StatRow l="Paid Leave Benefit" v={fmtINR(stats.leavePay)} c={C.green}/>
+          <StatRow l="Unused Leave Bonus" v={`+${fmtINR(stats.unusedLeavePay)}`} c={stats.unusedLeaves>0?C.teal:C.textDim} last/>
+          {stats.unusedLeaves>0&&<div style={{marginTop:10,background:C.teal+"15",borderRadius:10,padding:"10px 12px",fontSize:12,color:C.teal}}>🎉 {stats.unusedLeaves} unused leave = +{fmtINR(stats.unusedLeavePay)} bonus!</div>}
+        </Card>
+
+        <SecTitle>💰 Salary Breakdown</SecTitle>
+        <Card>
+          <StatRow l="Base (Minutes Worked)" v={fmtINR(stats.worked*ppm)} c={C.green}/>
+          <StatRow l="Paid Leave" v={fmtINR(stats.leavePay)} c={C.green}/>
+          <StatRow l="Unused Leave Bonus" v={`+${fmtINR(stats.unusedLeavePay)}`} c={C.teal}/>
+          <StatRow l="OT (Approved)" v={`+${fmtINR(stats.ot*ppm)}`} c={C.blue}/>
+          <StatRow l="Late Mark Cut" v={`-${fmtINR(stats.lmDed)}`} c={C.red} last/>
+          <div style={{borderTop:`1px solid ${C.border}`,marginTop:8,paddingTop:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:15,fontWeight:700,color:C.textBright}}>Estimated Total</span>
+            <span style={{fontSize:22,fontWeight:800,color:C.amber,fontFamily:"'DM Mono'"}}>{fmtINR(stats.est)}</span>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ─── Year View ────────────────────────────────────────────────────────────────
+function YearView({yr,setYr,att,salary}) {
+  const months = MONTHS.map((_,i)=>{
+    const s=calcMonthStats(yr,i,att,salary);
+    const pct=s.totalMins>0?Math.min(100,(s.worked/s.totalMins)*100):0;
+    return{mo:i,...s,pct};
+  });
+  const totalEst=months.reduce((s,m)=>s+m.est,0);
+  const now=new Date();
+  return (
+    <div style={{padding:"0 12px 40px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 0 12px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button onClick={()=>setYr(y=>y-1)} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.text,width:30,height:30,borderRadius:8,cursor:"pointer",fontSize:16}}>‹</button>
+          <div style={{fontSize:16,fontWeight:700,color:C.textBright}}>{yr} Overview</div>
+          <button onClick={()=>setYr(y=>y+1)} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.text,width:30,height:30,borderRadius:8,cursor:"pointer",fontSize:16}}>›</button>
+        </div>
+        <div style={{fontSize:14,fontWeight:700,color:C.amber,fontFamily:"'DM Mono'"}}>{fmtINR(totalEst)}</div>
+      </div>
+      {months.map(({mo,worked,lm,absences,est,pct})=>{
+        const isNow=now.getFullYear()===yr&&now.getMonth()===mo;
+        return (
+          <div key={mo} style={{background:C.card,border:`1px solid ${isNow?C.amber+"44":C.border}`,borderRadius:14,padding:"12px 14px",marginBottom:6}}>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <div style={{width:38,textAlign:"center"}}>
+                <div style={{fontSize:13,fontWeight:800,color:isNow?C.amber:lm>=10?C.red:C.textBright}}>{MONTHS[mo].slice(0,3)}</div>
+                {isNow&&<div style={{fontSize:8,color:C.amber,fontWeight:700}}>NOW</div>}
+              </div>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                  <span style={{fontSize:11,color:C.textDim}}>
+                    <span style={{color:C.teal,fontFamily:"'DM Mono'"}}>{fmtMins(worked)}</span>
+                    {lm>0&&<span style={{color:lm>=10?C.red:C.orange,marginLeft:8}}>🔴 {lm}</span>}
+                    {absences>0&&<span style={{color:C.red,marginLeft:8}}>❌ {absences}</span>}
+                  </span>
+                  <span style={{fontSize:13,fontWeight:700,color:est>0?C.amber:C.textDim,fontFamily:"'DM Mono'"}}>{fmtINR(est)}</span>
+                </div>
+                <div style={{background:C.bg,borderRadius:3,height:5,overflow:"hidden"}}>
+                  <div style={{background:lm>=10?C.red:est>0?C.green:C.border,height:"100%",width:`${pct}%`,borderRadius:3}}/>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      <div style={{background:`linear-gradient(135deg,${C.amber}22,${C.amber}08)`,border:`1px solid ${C.amber}44`,borderRadius:16,padding:"16px 20px",marginTop:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{fontSize:11,color:C.amber+"99",fontWeight:700,marginBottom:4}}>Total {yr} Estimated</div>
+          <div style={{fontSize:11,color:C.textDim}}>Based on entries so far</div>
+        </div>
+        <div style={{fontSize:26,fontWeight:800,color:C.amber,fontFamily:"'DM Mono'"}}>{fmtINR(totalEst)}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Import Helpers ───────────────────────────────────────────────────────────
+function parseTimeStr(raw) {
+  if(!raw) return "";
+  const s=String(raw).trim();
+  if(!isNaN(s)&&s.includes(".")){
+    const frac=parseFloat(s),totalMins=Math.round(frac*24*60),h=Math.floor(totalMins/60)%24,m=totalMins%60;
+    return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
+  }
+  const match=s.match(/(\d{1,2}):(\d{2})/);
+  if(match) return `${String(parseInt(match[1])).padStart(2,"0")}:${String(parseInt(match[2])).padStart(2,"0")}`;
+  return "";
+}
+function parseDateStr(raw) {
+  if(!raw) return null;
+  const s=String(raw).trim();
+  const m1=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); if(m1) return{d:parseInt(m1[1]),mo:parseInt(m1[2])-1,y:parseInt(m1[3])};
+  const m2=s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);   if(m2) return{d:parseInt(m2[1]),mo:parseInt(m2[2])-1,y:parseInt(m2[3])};
+  if(!isNaN(s)&&!s.includes(":")){const serial=parseInt(s);if(serial>40000&&serial<60000){const d=new Date(Math.round((serial-25569)*86400*1000));return{d:d.getUTCDate(),mo:d.getUTCMonth(),y:d.getUTCFullYear()};}}
+  const m3=s.match(/^(\d{4})-(\d{2})-(\d{2})$/); if(m3) return{d:parseInt(m3[3]),mo:parseInt(m3[2])-1,y:parseInt(m3[1])};
+  return null;
+}
+function findColIdx(headers,keywords) {
+  const h=headers.map(x=>String(x||"").toLowerCase().trim());
+  for(const kw of keywords){const i=h.findIndex(x=>x.includes(kw));if(i>=0)return i;}
+  return -1;
+}
+function parseRows(rows) {
+  if(!rows||rows.length<2) return [];
+  const headers=rows[0];
+  const di=findColIdx(headers,["date","din"]);
+  if(di<0) return [];
+
+  // Detect P1,P2,P3... columns
+  const pCols=[];
+  for(let i=0;i<headers.length;i++){
+    const h=String(headers[i]||"").trim().toLowerCase();
+    const m=h.match(/^p(\d+)$/);
+    if(m) pCols.push({idx:i,num:parseInt(m[1])});
+  }
+  pCols.sort((a,b)=>a.num-b.num);
+
+  // Fallback: In/Out columns
+  const ii = pCols.length===0 ? findColIdx(headers,["in","punch in","in time","entry"]) : -1;
+  const oi = pCols.length===0 ? findColIdx(headers,["out","punch out","out time","exit"]) : -1;
+
+  const results=[];
+  for(let r=1;r<rows.length;r++){
+    const row=rows[r];
+    const date=parseDateStr(row[di]);
+    if(!date) continue;
+    let punches=[];
+    if(pCols.length>0){
+      for(const col of pCols){const t=parseTimeStr(row[col.idx]);if(t)punches.push(t);}
+    } else if(ii>=0){
+      const inT=parseTimeStr(row[ii]);
+      const outT=oi>=0?parseTimeStr(row[oi]):"";
+      if(inT){punches.push(inT);if(outT)punches.push(outT);}
+    }
+    if(punches.length===0) continue;
+    results.push({...date,punches});
+  }
+  return results;
+}
+
+// ─── Cloud Sync ───────────────────────────────────────────────────────────────
+const JBIN="https://api.jsonbin.io/v3";
+let syncTimer=null;
+async function cloudLoad(k,b){const r=await fetch(`${JBIN}/b/${b}/latest`,{headers:{"X-Master-Key":k,"X-Bin-Meta":false}});if(!r.ok)throw new Error();return await r.json();}
+async function cloudCreate(k,p){const r=await fetch(`${JBIN}/b`,{method:"POST",headers:{"X-Master-Key":k,"Content-Type":"application/json","X-Bin-Name":"salary-tracker","X-Bin-Private":"true"},body:JSON.stringify(p)});if(!r.ok)throw new Error();const j=await r.json();return j.metadata.id;}
+async function cloudUpdate(k,b,p){const r=await fetch(`${JBIN}/b/${b}`,{method:"PUT",headers:{"X-Master-Key":k,"Content-Type":"application/json"},body:JSON.stringify(p)});if(!r.ok)throw new Error();}
+
+// ─── Settings View ────────────────────────────────────────────────────────────
+function SettingsView({salary,setSalary,clearAll,importData,apiKey,setApiKey,binId,setBinId,syncStatus,syncErr,lastSync,manualSync,onCloudSaved}) {
+  const [v,setV]=useState(salary);
+  const [saved,setSaved]=useState(false);
+  const [kInput,setKInput]=useState(apiKey);
+  const [bInput,setBInput]=useState(binId);
+  const [cSaved,setCSaved]=useState(false);
+  const [impStatus,setImpStatus]=useState(null);
+  const [importing,setImporting]=useState(false);
+
+  const saveCloud = () => {
+    const k=kInput.trim(), b=bInput.trim();
+    setApiKey(k); setBinId(b);
+    setCSaved(true); setTimeout(()=>setCSaved(false),2000);
+    // Immediately trigger cloud load with new credentials
+    if(k) onCloudSaved(k,b);
+  };
+
+  const handleFile=async(e)=>{
+    const file=e.target.files[0]; if(!file) return;
+    setImporting(true); setImpStatus(null);
+    try{
+      let rows=[];
+      if(file.name.toLowerCase().endsWith(".csv")){
+        const text=await file.text();
+        rows=text.split(/\r?\n/).filter(l=>l.trim()).map(l=>l.split(",").map(x=>x.trim().replace(/^"|"$/g,"")));
+      } else {
+        const buf=await file.arrayBuffer();
+        const wb=XLSX.read(buf,{type:"array",cellDates:false});
+        rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:""});
+      }
+      const parsed=parseRows(rows);
+      if(parsed.length===0){
+        setImpStatus({msg:"❌ No valid data found. Ensure Date, In/Out or P1/P2/P3 columns exist.",err:true});
+      } else {
+        const {ok,skip}=importData(parsed);
+        setImpStatus({msg:`✅ ${ok} days imported! ${skip>0?`(${skip} skipped — already existed)`:""} Smart lunch detection will auto-run.`,err:false});
+      }
+    } catch(err){setImpStatus({msg:"❌ Could not read file. Please try again.",err:true});}
+    setImporting(false); e.target.value="";
+  };
+
+  return (
+    <div style={{padding:"16px 12px 40px"}}>
+      <Card>
+        <div style={{fontSize:12,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:0.8,marginBottom:14}}>💰 Set Monthly Salary</div>
+        <Label>Monthly CTC (₹)</Label>
+        <input type="number" value={v} onChange={e=>setV(+e.target.value)} style={{background:C.card2,border:`1px solid ${C.border}`,color:C.amber,padding:"14px 16px",borderRadius:12,width:"100%",fontFamily:"'DM Mono'",fontSize:22,fontWeight:700,outline:"none",marginBottom:12}}/>
+        <button onClick={()=>{setSalary(v);setSaved(true);setTimeout(()=>setSaved(false),2000);}} style={{width:"100%",padding:13,borderRadius:12,border:"none",cursor:"pointer",background:saved?C.green:C.amber,color:"#000",fontWeight:800,fontSize:14,transition:"background 0.3s"}}>
+          {saved?"✅ Saved!":"Save Salary"}
+        </button>
+      </Card>
+
+      <SecTitle>☁️ Cloud Sync (PC + Mobile)</SecTitle>
+      <Card>
+        {/* Status Bar */}
+        <div style={{background:C.card2,borderRadius:10,padding:"10px 12px",marginBottom:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{fontSize:12}}>
+              {syncStatus==="syncing"&&<span style={{color:C.amber}}>🔄 Syncing...</span>}
+              {syncStatus==="success"&&<span style={{color:C.green}}>✅ Synced {lastSync&&`at ${lastSync}`}</span>}
+              {syncStatus==="error"&&<span style={{color:C.red}}>❌ Sync failed</span>}
+              {syncStatus==="idle"&&<span style={{color:C.textDim}}>{apiKey&&binId?"☁️ Cloud connected":"☁️ Not connected"}</span>}
+            </div>
+            {apiKey&&binId&&<button onClick={manualSync} style={{background:C.blue+"22",color:C.blue,border:`1px solid ${C.blue}33`,borderRadius:8,padding:"5px 10px",fontSize:11,fontWeight:700,cursor:"pointer"}}>↻ Pull Now</button>}
+          </div>
+          {syncStatus==="error"&&syncErr&&<div style={{fontSize:11,color:C.red+"cc",marginTop:6,paddingTop:6,borderTop:`1px solid ${C.red}22`}}>
+            ⚠️ {syncErr}
+          </div>}
+        </div>
+        {!apiKey&&<div style={{background:C.amber+"15",border:`1px solid ${C.amber}33`,borderRadius:10,padding:"10px 12px",marginBottom:14,fontSize:12,color:C.amber,lineHeight:1.6}}>
+          📌 Cloud sync keeps your data identical across your phone and PC using JSONBin.io (free).
+        </div>}
+        <div style={{background:C.bg,borderRadius:10,padding:12,marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.textDim,marginBottom:10,textTransform:"uppercase",letterSpacing:0.8}}>One-time Setup:</div>
+          {[["1","Go to jsonbin.io → Create a free account"],["2","Click your avatar (top right) → API Keys"],["3","Copy your Secret Key (starts with $2a$10$...)"],["4","Paste below and click Save — Bin ID auto-creates on first save"]].map(([n,t])=>(
+            <div key={n} style={{display:"flex",gap:10,marginBottom:8,alignItems:"flex-start"}}>
+              <div style={{width:20,height:20,borderRadius:"50%",background:C.amber,color:"#000",fontSize:10,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>{n}</div>
+              <div style={{fontSize:12,color:C.textDim,lineHeight:1.5}}>{t}</div>
+            </div>
+          ))}
+        </div>
+        <Label>JSONBin Secret Key</Label>
+        <input type="password" value={kInput} onChange={e=>setKInput(e.target.value)} placeholder="$2a$10$xxxxxxxxxxxxxxxxxxxxxxx" style={{background:C.card2,border:`1px solid ${C.border}`,color:C.textBright,padding:"10px 14px",borderRadius:10,width:"100%",fontFamily:"'DM Mono'",fontSize:13,outline:"none",marginBottom:12}}/>
+        <Label>Bin ID <span style={{fontWeight:400,fontSize:10}}>(auto-created on first save)</span></Label>
+        <input type="text" value={bInput} onChange={e=>setBInput(e.target.value)} placeholder="Leave empty — will be auto created" style={{background:C.card2,border:`1px solid ${C.border}`,color:C.textBright,padding:"10px 14px",borderRadius:10,width:"100%",fontFamily:"'DM Mono'",fontSize:13,outline:"none",marginBottom:12}}/>
+        <button onClick={saveCloud} style={{width:"100%",padding:12,borderRadius:12,border:"none",cursor:"pointer",background:cSaved?C.green:C.blue,color:"#fff",fontWeight:800,fontSize:14,transition:"background 0.3s"}}>
+          {cSaved?"✅ Saved! Both devices will now sync":"💾 Save Cloud Settings"}
+        </button>
+        {apiKey&&binId&&<div style={{marginTop:12,background:C.card2,borderRadius:10,padding:"10px 12px",fontSize:11,color:C.textDim,lineHeight:1.6}}>
+          <strong style={{color:C.textBright}}>On another device:</strong> Open the same Netlify link → Settings → enter same Secret Key + Bin ID → Save. ✅
+        </div>}
+      </Card>
+
+      <SecTitle>📥 Import Attendance</SecTitle>
+      <Card>
+        <div style={{fontSize:12,color:C.textDim,marginBottom:12,lineHeight:1.6}}>Upload Excel or CSV. Two formats supported:</div>
+        {/* Format examples */}
+        <div style={{display:"flex",gap:8,marginBottom:14}}>
+          {[["Simple","Date | In | Out"],["Multi-Punch","Date | P1 | P2 | P3 | P4..."]].map(([t,s])=>(
+            <div key={t} style={{flex:1,background:C.bg,borderRadius:10,padding:"10px 12px",border:`1px solid ${C.border}`}}>
+              <div style={{fontSize:10,fontWeight:700,color:C.amber,marginBottom:4}}>{t}</div>
+              <div style={{fontSize:11,fontFamily:"'DM Mono'",color:C.textDim}}>{s}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{background:C.bg,borderRadius:10,padding:10,marginBottom:14,fontSize:10,color:C.textDim}}>
+          📌 Date format: DD/MM/YYYY · Time: HH:MM (24hr) · Lunch auto-detected from punches
+        </div>
+        <label style={{display:"block",cursor:"pointer"}}>
+          <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} style={{display:"none"}}/>
+          <div style={{width:"100%",padding:14,borderRadius:12,border:`2px dashed ${C.border}`,background:C.card2,color:importing?C.amber:C.textBright,fontWeight:700,fontSize:14,textAlign:"center",cursor:"pointer"}}>
+            {importing?"⏳ Importing...":"📂 Choose File (.xlsx / .csv)"}
+          </div>
+        </label>
+        {impStatus&&<div style={{marginTop:12,background:impStatus.err?C.red+"18":C.green+"18",border:`1px solid ${impStatus.err?C.red:C.green}33`,borderRadius:10,padding:"10px 14px",fontSize:13,color:impStatus.err?C.red:C.green,fontWeight:600}}>{impStatus.msg}</div>}
+        <div style={{marginTop:14,background:C.card2,borderRadius:10,padding:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.textDim,marginBottom:8}}>💡 Tips:</div>
+          {["P1,P2,P3... columns are auto-detected and sorted by number","Existing entries will not be overwritten","Lunch is auto-detected — first gap after 12 PM that is ≥ 30 min","Tap any day to manually adjust punches, OT, or leave report"].map(t=>(
+            <div key={t} style={{fontSize:11,color:C.textDim,marginBottom:5,paddingLeft:8,borderLeft:`2px solid ${C.border}`}}>{t}</div>
+          ))}
+        </div>
+      </Card>
+
+      <SecTitle>📋 Office Rules</SecTitle>
+      <Card>
+        {[["Office Hours","Mon–Fri: 9:00 AM – 7:00 PM"],["Saturday","Half Day: 9:00 AM – 1:30 PM"],["Sunday","Full Holiday 🌴"],["Lunch","After 12 PM, max 1 hour (auto-detected)"],["Lunch Min Gap","≥ 30 min to count as lunch"],["Late Mark","15+ min late = 1 mark"],["Max LM/Day","2 per day"],["2hr+ Late","Counts as leave (or file report)"],["Paid Leaves","2 per month"],["10 Late Marks","= 1 day salary cut"],["OT","After 7 PM — approval required"],["Unused Leave","= Paid out as bonus 🎉"]].map(([k,vl])=>(
+          <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",padding:"8px 0",borderBottom:`1px solid ${C.border}22`}}>
+            <span style={{fontSize:12,color:C.textDim,flex:1}}>{k}</span>
+            <span style={{fontSize:12,color:C.textBright,fontWeight:500,textAlign:"right",flex:1.5,paddingLeft:8}}>{vl}</span>
+          </div>
+        ))}
+      </Card>
+
+      <div style={{marginTop:8}}>
+        <button onClick={()=>{if(window.confirm("Delete all data? This cannot be undone!"))clearAll();}} style={{width:"100%",padding:13,borderRadius:12,border:`1px solid ${C.red}44`,background:C.red+"15",color:C.red,fontWeight:700,fontSize:13,cursor:"pointer"}}>
+          🗑️ Clear All Data
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Header ───────────────────────────────────────────────────────────────────
+function Header({yr,mo,setYr,setMo,view,setView,syncStatus,hasCloud}) {
+  const prev=()=>{if(mo===0){setMo(11);setYr(y=>y-1);}else setMo(m=>m-1);};
+  const next=()=>{if(mo===11){setMo(0);setYr(y=>y+1);}else setMo(m=>m+1);};
+  const tabs=[["month","📅"],["stats","📊"],["year","🗓️"],["settings","⚙️"]];
+  const showNav=view==="month"||view==="stats";
+  const syncIcon={idle:"☁️",syncing:"🔄",success:"✅",error:"❌"}[syncStatus]||"☁️";
+  return (
+    <div style={{background:C.card,borderBottom:`1px solid ${C.border}`,padding:"14px 16px 0",position:"sticky",top:0,zIndex:100}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+        {showNav?<>
+          <button onClick={prev} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.text,width:34,height:34,borderRadius:10,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>‹</button>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{fontSize:18,fontWeight:800,color:C.textBright,letterSpacing:-0.5}}>{MONTHS[mo]} {yr}</div>
+            {hasCloud&&<span style={{fontSize:13}}>{syncIcon}</span>}
+          </div>
+          <button onClick={next} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.text,width:34,height:34,borderRadius:10,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>›</button>
+        </>:<div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{fontSize:18,fontWeight:800,color:C.textBright}}>💼 Salary Tracker</div>
+          {hasCloud&&<span style={{fontSize:13}}>{syncIcon}</span>}
+        </div>}
+      </div>
+      <div style={{display:"flex",gap:4}}>
+        {tabs.map(([v,icon])=>(
+          <button key={v} onClick={()=>setView(v)} style={{flex:1,padding:"7px 0 10px",background:"transparent",border:"none",cursor:"pointer",fontWeight:700,fontSize:14,color:view===v?C.amber:C.textDim,borderBottom:view===v?`2px solid ${C.amber}`:"2px solid transparent",transition:"all 0.2s"}}>
+            {icon}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const now=new Date();
+  const [view,setView]=useState("month");
+  const [yr,setYr]=useState(now.getFullYear());
+  const [mo,setMo]=useState(now.getMonth());
+  const [selDay,setSelDay]=useState(null);
+  const [showModal,setShowModal]=useState(false);
+  const [salary,setSalaryState]=useState(()=>+(localStorage.getItem("hr_sal")||30000));
+  const [att,setAtt]=useState(()=>{try{return JSON.parse(localStorage.getItem("hr_att")||"{}");}catch{return{};}});
+  const [apiKey,setApiKeyState]=useState(()=>localStorage.getItem("hr_apikey")||"");
+  const [binId,setBinIdState]=useState(()=>localStorage.getItem("hr_binid")||"");
+  const [syncStatus,setSyncStatus]=useState("idle");
+  const [syncErr,setSyncErr]=useState("");
+  const [lastSync,setLastSync]=useState(()=>localStorage.getItem("hr_lastsync")||"");
+
+  // ── useRef so async callbacks ALWAYS read the latest value (fixes stale closure) ──
+  const apiKeyRef=useRef(apiKey);
+  const binIdRef=useRef(binId);
+  const attRef=useRef(att);
+  const salaryRef=useRef(salary);
+
+  const setApiKey=v=>{setApiKeyState(v);localStorage.setItem("hr_apikey",v);apiKeyRef.current=v;};
+  const setBinId=v=>{setBinIdState(v);localStorage.setItem("hr_binid",v);binIdRef.current=v;};
+
+  // Keep refs in sync with state
+  useEffect(()=>{apiKeyRef.current=apiKey;},[apiKey]);
+  useEffect(()=>{binIdRef.current=binId;},[binId]);
+  useEffect(()=>{attRef.current=att;},[att]);
+  useEffect(()=>{salaryRef.current=salary;},[salary]);
+
+  // ── Load from cloud on mount AND whenever API key+BinId become available ──
+  const doCloudLoad=useCallback(async(k,b)=>{
+    if(!k||!b) return;
+    setSyncStatus("syncing"); setSyncErr("");
+    try{
+      const data=await cloudLoad(k,b);
+      if(data?.att){setAtt(data.att);localStorage.setItem("hr_att",JSON.stringify(data.att));attRef.current=data.att;}
+      if(data?.salary){setSalaryState(data.salary);localStorage.setItem("hr_sal",String(data.salary));salaryRef.current=data.salary;}
+      setSyncStatus("success");
+      const t=new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"});
+      setLastSync(t);localStorage.setItem("hr_lastsync",t);
+    }catch(e){
+      setSyncStatus("error");
+      setSyncErr(e?.message||"Check your Secret Key and Bin ID.");
+    }
+  },[]);
+
+  // On mount: load if credentials already saved
+  useEffect(()=>{doCloudLoad(apiKeyRef.current,binIdRef.current);},[]);
+
+  // ── Schedule cloud save (uses refs — never stale) ──
+  const scheduleSave=useCallback((newAtt,sal)=>{
+    const k=apiKeyRef.current;
+    if(!k) return;
+    clearTimeout(syncTimer); setSyncStatus("syncing"); setSyncErr("");
+    syncTimer=setTimeout(async()=>{
+      try{
+        const payload={att:newAtt,salary:sal};
+        let bid=binIdRef.current;
+        if(!bid){
+          bid=await cloudCreate(k,payload);
+          setBinId(bid); // updates state + ref + localStorage
+        } else {
+          await cloudUpdate(k,bid,payload);
+        }
+        setSyncStatus("success");
+        const t=new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"});
+        setLastSync(t);localStorage.setItem("hr_lastsync",t);
+      }catch(e){
+        setSyncStatus("error");
+        setSyncErr(e?.message||"Sync failed. Check internet connection.");
+      }
+    },1500);
+  },[]);
+
+  const key=(y,m,d)=>`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+  const getE=(y,m,d)=>att[key(y,m,d)]||null;
+
+  const setE=(y,m,d,data)=>{
+    const u={...attRef.current};
+    if(data) u[key(y,m,d)]=data; else delete u[key(y,m,d)];
+    setAtt(u); localStorage.setItem("hr_att",JSON.stringify(u)); scheduleSave(u,salaryRef.current);
+  };
+  const setSalary=v=>{setSalaryState(v);localStorage.setItem("hr_sal",String(v));scheduleSave(attRef.current,v);};
+  const clearAll=()=>{setAtt({});localStorage.removeItem("hr_att");scheduleSave({},salaryRef.current);};
+
+  const importData=(rows)=>{
+    let ok=0,skip=0,newAtt;
+    setAtt(prev=>{
+      const u={...prev};
+      for(const{y,mo,d,punches}of rows){
+        const k=`${y}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+        if(u[k]){skip++;continue;}
+        u[k]={punches}; ok++;
+      }
+      localStorage.setItem("hr_att",JSON.stringify(u)); newAtt=u; return u;
+    });
+    setTimeout(()=>scheduleSave(newAtt||attRef.current,salaryRef.current),200);
+    return{ok,skip};
+  };
+
+  const manualSync=()=>doCloudLoad(apiKeyRef.current,binIdRef.current);
+
+  const stats=useMemo(()=>calcMonthStats(yr,mo,att,salary),[att,yr,mo,salary]);
+
+  return (
+    <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'Syne',sans-serif",color:C.text,maxWidth:480,margin:"0 auto"}}>
+      <Header yr={yr} mo={mo} setYr={setYr} setMo={setMo} view={view} setView={setView} syncStatus={syncStatus} hasCloud={!!apiKey&&!!binId}/>
+      <main>
+        {view==="month"&&<MonthView yr={yr} mo={mo} stats={stats} getE={getE} openDay={d=>{setSelDay(d);setShowModal(true);}} now={now}/>}
+        {view==="stats"&&<StatsView stats={stats} salary={salary}/>}
+        {view==="year"&&<YearView yr={yr} setYr={setYr} att={att} salary={salary}/>}
+        {view==="settings"&&<SettingsView salary={salary} setSalary={setSalary} clearAll={clearAll} importData={importData}
+          apiKey={apiKey} setApiKey={setApiKey} binId={binId} setBinId={setBinId}
+          syncStatus={syncStatus} syncErr={syncErr} lastSync={lastSync} manualSync={manualSync}
+          onCloudSaved={(k,b)=>doCloudLoad(k,b)}/>}
+      </main>
+      {showModal&&selDay&&(
+        <DayModal yr={yr} mo={mo} day={selDay} entry={getE(yr,mo,selDay)}
+          onSave={data=>{setE(yr,mo,selDay,data);setShowModal(false);}}
+          onClose={()=>setShowModal(false)}/>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
