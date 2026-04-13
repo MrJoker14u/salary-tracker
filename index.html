@@ -131,6 +131,7 @@ function calcDay(rawEntry, y, mo, d) {
   const ot      = (entry.otA===true && otMins>0) ? otMins : 0;
   const otPending = otMins>0 && (entry.otA===null || entry.otA===undefined);
   const otStatus = ot>0 ? OT_STATUS.APPROVED : otPending ? OT_STATUS.PENDING : OT_STATUS.NONE;
+  const otStatus = otMins>0 && ot===0 ? OT_STATUS.PENDING : ot>0 ? OT_STATUS.APPROVED : OT_STATUS.NONE;
 
   return {isSun,isSat,scheduled,worked,deducted,lm,ot,otMins,otStatus,
           mLate,lunchGap,lunchOver,personalMins,gaps,lunchIdx,status};
@@ -175,6 +176,13 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
     ? {accent:C.purple,bg:C.purple+"15",border:C.purple+"33",label:"OT✓ Approved"}
     : otA===false
       ? {accent:C.textDim,bg:C.bg,border:C.border,label:"OT Rejected (Normal)"}
+  const dayEnd = isSat ? SAT_END : WORK_END;
+  const lastPunchMins = validPunches.length ? t2m(validPunches[validPunches.length-1]) : 0;
+  const hasOT = !absent && lastPunchMins > dayEnd;
+  const otUi = otA===true
+    ? {accent:C.purple,bg:C.purple+"15",border:C.purple+"33",label:"OT✓ Approved"}
+    : otA===false
+      ? {accent:C.textDim,bg:C.card2,border:C.border,label:"OT Not Approved"}
       : {accent:C.blue,bg:C.blue+"15",border:C.blue+"33",label:"OT? Pending"};
 
   const handleSave = () => {
@@ -270,6 +278,7 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
             <div style={{display:"flex",gap:8}}>
               <Pill label="✓ Approved" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
               <Pill label="✗ Rejected" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
+              <Pill label="✗ Not Approved" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
             </div>
           </div>}
 
@@ -302,6 +311,8 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
                 ["Late Marks",   `${ds.lm} 🔴`, ds.lm>0?C.red:C.green],
                 ["Hours Worked", fmtMins(ds.worked+ds.ot), C.teal],
                 ["OT",           otA===true?`+${fmtMins(ds.ot)}`:hasOT?(otA===false?"Rejected":"Pending"):"—", otA===true?C.purple:otA===false?C.textDim:hasOT?C.blue:C.textDim],
+                ["Hours Worked", fmtMins(ds.worked), C.teal],
+                ["OT",           otA===true?`+${fmtMins(ds.ot)}`:hasOT?(otA===false?"Not Approved":"Pending"):"—", otA===true?C.purple:otA===false?C.textDim:hasOT?C.blue:C.textDim],
               ].map(([l,v,c])=>(
                 <div key={l} style={{background:C.bg,borderRadius:8,padding:"8px 6px",textAlign:"center"}}>
                   <div style={{fontSize:12,fontWeight:700,color:c,fontFamily:"'DM Mono'",marginBottom:2}}>{v}</div>
