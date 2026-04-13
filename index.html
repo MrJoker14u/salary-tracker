@@ -410,27 +410,19 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
         ))}
       </div>
 
-      <div style={{fontSize:11,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:0.8,padding:"14px 16px 8px"}}>Recent Entries</div>
-      {stats.dr.filter(d=>d.status!=="sunday"&&d.status!=="empty").slice(-6).reverse().map(ds=>{
-        const e=legacyToNew(getE(yr,mo,ds.d));
-        const sc={present:C.green,absent:C.red,leaverep:C.orange};
+      <div style={{fontSize:11,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:0.8,padding:"14px 16px 8px"}}>Month Summary</div>
+      {(()=>{
+        const lateMinsTotal = stats.dr.reduce((sum,day)=>sum+(day.mLate||0),0);
+        const pendingOtDays = stats.dr.filter(day=>day.otStatus===OT_STATUS.PENDING).length;
         return (
-          <div key={ds.d} onClick={()=>openDay(ds.d)} style={{background:C.card,margin:"3px 12px",borderRadius:12,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",border:`1px solid ${C.border}`,borderLeft:`3px solid ${sc[ds.status]||C.textDim}`}}>
-            <div>
-              <div style={{fontSize:13,fontWeight:600,color:C.textBright}}>{new Date(yr,mo,ds.d).toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short"})}</div>
-              <div style={{fontSize:11,color:C.textDim,marginTop:2}}>
-                {e?.punches?.length>0 ? e.punches.map((p,i)=>`P${i+1}:${p}`).join(" · ") : "No punches"}
-              </div>
-            </div>
-            <div style={{textAlign:"right"}}>
-              <div style={{fontSize:13,fontWeight:700,fontFamily:"'DM Mono'",color:ds.worked>0?C.teal:C.red}}>{fmtMins(ds.worked)}</div>
-              {ds.lm>0&&<div style={{fontSize:10,color:C.red}}>🔴 ×{ds.lm}</div>}
-              {ds.ot>0&&<div style={{fontSize:10,color:C.blue}}>+{fmtMins(ds.ot)} OT</div>}
-              {ds.personalMins>0&&<div style={{fontSize:10,color:C.orange}}>⏸ {fmtMins(ds.personalMins)}</div>}
-            </div>
+          <div style={{background:C.card,margin:"3px 12px",borderRadius:12,padding:"10px 14px",border:`1px solid ${C.border}`}}>
+            <StatRow l="Total Late Minutes" v={fmtMins(lateMinsTotal)} c={lateMinsTotal>0?C.red:C.green}/>
+            <StatRow l="Total Personal Minutes" v={fmtMins(stats.personalTotal)} c={stats.personalTotal>0?C.orange:C.green}/>
+            <StatRow l="Total Deducted Minutes" v={fmtMins(stats.ded)} c={stats.ded>0?C.red:C.green}/>
+            <StatRow l="OT Approval Pending Days" v={`${pendingOtDays} day(s)`} c={pendingOtDays>0?C.blue:C.green} last/>
           </div>
         );
-      })}
+      })()}
       <div style={{height:24}}/>
     </div>
   );
