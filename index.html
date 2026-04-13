@@ -182,6 +182,11 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
     if (absent) { onSave({absent:true}); return; }
     onSave({punches: validPunches, lr, otA: hasOT ? otA : null});
   };
+  const saveOtDecision = val => {
+    setOtA(val);
+    if (absent || !hasOT) return;
+    onSave({punches: validPunches, lr, otA: val});
+  };
 
   const overlay = {position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center",backdropFilter:"blur(4px)"};
   const sheet = {background:C.card,borderRadius:"24px 24px 0 0",width:"100%",maxWidth:480,maxHeight:"92vh",overflowY:"auto",padding:"8px 20px 40px",border:`1px solid ${C.border}`};
@@ -264,8 +269,8 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
             <div style={{fontSize:13,color:otUi.accent,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {isSat?"1:30 PM":"7:00 PM"}</div>
             <div style={{fontSize:11,color:otUi.accent,marginBottom:10}}>{otUi.label}</div>
             <div style={{display:"flex",gap:8}}>
-              <Pill label="✓ Approved" active={otA===true} color={C.green} onClick={()=>setOtA(true)}/>
-              <Pill label="✗ Not Approved" active={otA===false} color={C.red} onClick={()=>setOtA(false)}/>
+              <Pill label="✓ Approved" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
+              <Pill label="✗ Not Approved" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
             </div>
           </div>}
 
