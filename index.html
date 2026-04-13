@@ -129,8 +129,7 @@ function calcDay(rawEntry, y, mo, d) {
   const worked  = Math.max(0, scheduled-deducted);
   const otMins  = lastPunch > dayEnd ? lastPunch-dayEnd : 0;
   const ot      = (entry.otA===true && otMins>0) ? otMins : 0;
-  const otPending = otMins>0 && (entry.otA===null || entry.otA===undefined);
-  const otStatus = ot>0 ? OT_STATUS.APPROVED : otPending ? OT_STATUS.PENDING : OT_STATUS.NONE;
+  const otStatus = otMins>0 && ot===0 ? OT_STATUS.PENDING : ot>0 ? OT_STATUS.APPROVED : OT_STATUS.NONE;
 
   return {isSun,isSat,scheduled,worked,deducted,lm,ot,otMins,otStatus,
           mLate,lunchGap,lunchOver,personalMins,gaps,lunchIdx,status};
