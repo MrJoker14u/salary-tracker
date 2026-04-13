@@ -30,6 +30,7 @@ const {useState,useMemo,useEffect,useCallback,useRef} = React;
 const WORK_START = 9*60, WORK_END = 19*60, SAT_END = 13*60+30;
 const LUNCH_MAX = 60, LATE_MIN = 15, LEAVE_MIN = 120, NOON = 12*60, MIN_LUNCH_GAP = 30;
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const OT_STATUS = { PENDING:"OT_PENDING", APPROVED:"OT_APPROVED", NONE:"NO_OT" };
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
 const C = {
@@ -42,7 +43,7 @@ const C = {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const t2m = t => { if(!t||!String(t).includes(":")) return null; const [h,m]=String(t).split(":").map(Number); return h*60+m; };
 const m2t = m => { if(m==null) return ""; const h=Math.floor(m/60),mn=m%60; return `${String(h).padStart(2,"0")}:${String(mn).padStart(2,"0")}`; };
-const fmtMins = m => { if(!m||m===0) return "0m"; const h=Math.floor(Math.abs(m)/60),mn=Math.abs(m)%60; return h>0?(mn>0?`${h}h ${mn}m`:`${h}h`):`${mn}m`; };
+const fmtMins = m => { if(!m||m===0) return "0m"; return `${Math.abs(m)}m`; };
 const fmtINR = n => "₹"+Math.round(n).toLocaleString("en-IN");
 const getDays = (y,mo) => new Date(y,mo+1,0).getDate();
 const getDow = (y,mo,d) => new Date(y,mo,d).getDay();
@@ -74,7 +75,7 @@ function calcDay(rawEntry, y, mo, d) {
   const w = getDow(y,mo,d), isSun=w===0, isSat=w===6;
   const scheduled = isSun?0:isSat?270:540;
   const dayEnd = isSat?SAT_END:WORK_END;
-  const base = {isSun,isSat,scheduled,worked:0,deducted:0,lm:0,ot:0,otMins:0,
+  const base = {isSun,isSat,scheduled,worked:0,deducted:0,lm:0,ot:0,otMins:0,otStatus:OT_STATUS.NONE,
                 mLate:0,lunchGap:0,lunchOver:0,personalMins:0,gaps:[],lunchIdx:-1,status:"empty"};
 
   if (isSun) return {...base, status:"sunday"};
@@ -128,8 +129,10 @@ function calcDay(rawEntry, y, mo, d) {
   const worked  = Math.max(0, scheduled-deducted);
   const otMins  = lastPunch > dayEnd ? lastPunch-dayEnd : 0;
   const ot      = (entry.otA===true && otMins>0) ? otMins : 0;
+  const otPending = otMins>0 && (entry.otA===null || entry.otA===undefined);
+  const otStatus = ot>0 ? OT_STATUS.APPROVED : otPending ? OT_STATUS.PENDING : OT_STATUS.NONE;
 
-  return {isSun,isSat,scheduled,worked,deducted,lm,ot,otMins,
+  return {isSun,isSat,scheduled,worked,deducted,lm,ot,otMins,otStatus,
           mLate,lunchGap,lunchOver,personalMins,gaps,lunchIdx,status};
 }
 
@@ -170,6 +173,11 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
   const dayEnd = isSat ? SAT_END : WORK_END;
   const lastPunchMins = validPunches.length ? t2m(validPunches[validPunches.length-1]) : 0;
   const hasOT = !absent && lastPunchMins > dayEnd;
+  const otUi = otA===true
+    ? {accent:C.purple,bg:C.purple+"15",border:C.purple+"33",label:"OT✓ Approved"}
+    : otA===false
+      ? {accent:C.textDim,bg:C.bg,border:C.border,label:"OT Not Approved (Normal)"}
+      : {accent:C.blue,bg:C.blue+"15",border:C.blue+"33",label:"OT? Pending"};
 
   const handleSave = () => {
     if (absent) { onSave({absent:true}); return; }
@@ -253,9 +261,9 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
           </div>}
 
           {/* OT Banner */}
-          {hasOT&&<div style={{background:C.blue+"15",border:`1px solid ${C.blue}33`,borderRadius:12,padding:14,marginBottom:14}}>
-            <div style={{fontSize:13,color:C.blue,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {isSat?"1:30 PM":"7:00 PM"}</div>
-            <div style={{fontSize:11,color:C.textDim,marginBottom:10}}>Overtime is approval-based. Did you get it approved?</div>
+          {hasOT&&<div style={{background:otUi.bg,border:`1px solid ${otUi.border}`,borderRadius:12,padding:14,marginBottom:14}}>
+            <div style={{fontSize:13,color:otUi.accent,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {isSat?"1:30 PM":"7:00 PM"}</div>
+            <div style={{fontSize:11,color:otUi.accent,marginBottom:10}}>{otUi.label}</div>
             <div style={{display:"flex",gap:8}}>
               <Pill label="✓ Approved" active={otA===true} color={C.green} onClick={()=>setOtA(true)}/>
               <Pill label="✗ Not Approved" active={otA===false} color={C.red} onClick={()=>setOtA(false)}/>
@@ -290,7 +298,7 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
                 ["Personal",     ds.personalMins>0?`-${fmtMins(ds.personalMins)}`:"None", ds.personalMins>0?C.red:C.green],
                 ["Late Marks",   `${ds.lm} 🔴`, ds.lm>0?C.red:C.green],
                 ["Hours Worked", fmtMins(ds.worked), C.teal],
-                ["OT",           ds.ot>0?`+${fmtMins(ds.ot)}`:"—", C.blue],
+                ["OT",           otA===true?`+${fmtMins(ds.ot)}`:hasOT?(otA===false?"—":"Pending"):"—", otA===true?C.purple:otA===false?C.textDim:hasOT?C.blue:C.textDim],
               ].map(([l,v,c])=>(
                 <div key={l} style={{background:C.bg,borderRadius:8,padding:"8px 6px",textAlign:"center"}}>
                   <div style={{fontSize:12,fontWeight:700,color:c,fontFamily:"'DM Mono'",marginBottom:2}}>{v}</div>
@@ -340,9 +348,18 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
   const getDotColor = d => {
     const ds=stats.dr.find(r=>r.d===d);
     if(!ds||ds.status==="sunday"||ds.status==="empty") return "transparent";
+    if(ds.otStatus===OT_STATUS.PENDING) return C.blue;
+    if(ds.otStatus===OT_STATUS.APPROVED) return C.purple;
     if(ds.lm>0) return C.red;
     if(ds.status==="absent") return C.orange;
     return C.green;
+  };
+  const getDotMeta = d => {
+    const ds=stats.dr.find(r=>r.d===d);
+    if(!ds) return {size:5,shadow:"none",label:""};
+    if(ds.otStatus===OT_STATUS.PENDING) return {size:7,shadow:`0 0 8px ${C.blue}99`,label:"OT?"};
+    if(ds.otStatus===OT_STATUS.APPROVED) return {size:5,shadow:"none",label:"OT✓"};
+    return {size:5,shadow:"none",label:""};
   };
   const getCellBg = d => {
     const ds=stats.dr.find(r=>r.d===d);
@@ -377,10 +394,14 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
             const d=i+1,dow=getDow(yr,mo,d),isSun=dow===0,isSat=dow===6,isToday=d===todayD;
             const ds=stats.dr.find(r=>r.d===d);
             return (
-              <div key={d} onClick={()=>!isSun&&openDay(d)} style={{minHeight:52,borderRadius:10,padding:"6px 4px 4px",background:getCellBg(d),border:isToday?`2px solid ${C.amber}`:`1px solid ${C.border}22`,cursor:isSun?"default":"pointer",display:"flex",flexDirection:"column",alignItems:"center",opacity:isSun?0.3:1}}>
+              <div key={d} onClick={()=>!isSun&&openDay(d)} style={{minHeight:52,borderRadius:10,padding:"6px 4px 4px",background:getCellBg(d),border:isToday?`2px solid ${C.amber}`:`1px solid ${C.border}22`,cursor:isSun?"default":"pointer",display:"flex",flexDirection:"column",alignItems:"center",opacity:isSun?0.3:1,position:"relative"}}>
+                {ds?.lm>0&&<div title={`Late Marks: ${ds.lm}`} style={{position:"absolute",top:4,right:4,width:6,height:6,borderRadius:"50%",background:C.red,boxShadow:`0 0 6px ${C.red}88`}}/>}
                 <div style={{fontSize:13,fontWeight:700,color:isToday?C.amber:isSun?C.red:C.textBright,lineHeight:1}}>{d}</div>
                 {isSat&&<div style={{fontSize:8,color:C.textDim,marginTop:1}}>½</div>}
-                <div style={{width:5,height:5,borderRadius:"50%",background:getDotColor(d),marginTop:"auto"}}/>
+                {(()=>{ const dm=getDotMeta(d); return <>
+                  <div title={dm.label||undefined} style={{width:dm.size,height:dm.size,borderRadius:"50%",background:getDotColor(d),marginTop:"auto",boxShadow:dm.shadow}}/>
+                  {dm.label&&<div style={{fontSize:8,color:C.textDim,marginTop:2,lineHeight:1}}>{dm.label}</div>}
+                </>; })()}
               </div>
             );
           })}
@@ -388,7 +409,7 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
       </div>
 
       <div style={{display:"flex",gap:12,padding:"10px 16px 0",flexWrap:"wrap"}}>
-        {[[C.green,"Present"],[C.red,"Absent/LM"],[C.orange,"Leave Rep."],[C.amber,"Today"]].map(([c,l])=>(
+        {[[C.green,"Present"],[C.red,"Absent/LM"],[C.orange,"Leave Rep."],[C.blue,"OT?"],[C.purple,"OT✓"],[C.amber,"Today"]].map(([c,l])=>(
           <div key={l} style={{display:"flex",alignItems:"center",gap:4}}>
             <div style={{width:6,height:6,borderRadius:"50%",background:c}}/>
             <span style={{fontSize:10,color:C.textDim}}>{l}</span>
@@ -396,27 +417,19 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
         ))}
       </div>
 
-      <div style={{fontSize:11,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:0.8,padding:"14px 16px 8px"}}>Recent Entries</div>
-      {stats.dr.filter(d=>d.status!=="sunday"&&d.status!=="empty").slice(-6).reverse().map(ds=>{
-        const e=legacyToNew(getE(yr,mo,ds.d));
-        const sc={present:C.green,absent:C.red,leaverep:C.orange};
+      <div style={{fontSize:11,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:0.8,padding:"14px 16px 8px"}}>Month Summary</div>
+      {(()=>{
+        const lateMinsTotal = stats.dr.reduce((sum,day)=>sum+(day.mLate||0),0);
+        const pendingOtDays = stats.dr.filter(day=>day.otStatus===OT_STATUS.PENDING).length;
         return (
-          <div key={ds.d} onClick={()=>openDay(ds.d)} style={{background:C.card,margin:"3px 12px",borderRadius:12,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",border:`1px solid ${C.border}`,borderLeft:`3px solid ${sc[ds.status]||C.textDim}`}}>
-            <div>
-              <div style={{fontSize:13,fontWeight:600,color:C.textBright}}>{new Date(yr,mo,ds.d).toLocaleDateString("en-IN",{weekday:"short",day:"numeric",month:"short"})}</div>
-              <div style={{fontSize:11,color:C.textDim,marginTop:2}}>
-                {e?.punches?.length>0 ? e.punches.map((p,i)=>`P${i+1}:${p}`).join(" · ") : "No punches"}
-              </div>
-            </div>
-            <div style={{textAlign:"right"}}>
-              <div style={{fontSize:13,fontWeight:700,fontFamily:"'DM Mono'",color:ds.worked>0?C.teal:C.red}}>{fmtMins(ds.worked)}</div>
-              {ds.lm>0&&<div style={{fontSize:10,color:C.red}}>🔴 ×{ds.lm}</div>}
-              {ds.ot>0&&<div style={{fontSize:10,color:C.blue}}>+{fmtMins(ds.ot)} OT</div>}
-              {ds.personalMins>0&&<div style={{fontSize:10,color:C.orange}}>⏸ {fmtMins(ds.personalMins)}</div>}
-            </div>
+          <div style={{background:C.card,margin:"3px 12px",borderRadius:12,padding:"10px 14px",border:`1px solid ${C.border}`}}>
+            <StatRow l="Total Late Minutes" v={fmtMins(lateMinsTotal)} c={lateMinsTotal>0?C.red:C.green}/>
+            <StatRow l="Total Personal Minutes" v={fmtMins(stats.personalTotal)} c={stats.personalTotal>0?C.orange:C.green}/>
+            <StatRow l="Total Deducted Minutes" v={fmtMins(stats.ded)} c={stats.ded>0?C.red:C.green}/>
+            <StatRow l="OT Approval Pending Days" v={`${pendingOtDays} day(s)`} c={pendingOtDays>0?C.blue:C.green} last/>
           </div>
         );
-      })}
+      })()}
       <div style={{height:24}}/>
     </div>
   );
