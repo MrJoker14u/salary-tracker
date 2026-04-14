@@ -335,6 +335,7 @@ function calcMonthStats(yr,mo,att,salary,holidays=[]) {
   const perMin = totalMins>0 ? salary/totalMins : 0;
   const dayEq = totalMins/540;
   const oneDaySal = dayEq>0 ? salary/dayEq : 0;
+  let worked=0,ded=0,lm=0,ot=0,absences=0,personalTotal=0,unapprovedOtMins=0,rejectedOtMins=0;
   let worked=0,ded=0,lm=0,ot=0,absences=0,personalTotal=0,unapprovedOtMins=0;
   const dr=[];
   for(let d=1;d<=days;d++){
@@ -342,12 +343,19 @@ function calcMonthStats(yr,mo,att,salary,holidays=[]) {
     const e = att[key]||null;
     const ds = calcDay(e,yr,mo,d);
     dr.push({d,...ds});
+    if(!ds.isSun){
+      worked+=ds.worked;ded+=ds.deducted;lm+=ds.lm;ot+=ds.ot;personalTotal+=ds.personalMins;
+      unapprovedOtMins+=Math.max(0,ds.otMins-ds.ot);
+      if(ds.otStatus===OT_STATUS.REJECTED) rejectedOtMins+=ds.otMins;
+      if(ds.status==="absent")absences++;
+    }
     if(!ds.isSun){ worked+=ds.worked;ded+=ds.deducted;lm+=ds.lm;ot+=ds.ot;personalTotal+=ds.personalMins; unapprovedOtMins+=Math.max(0,ds.otMins-ds.ot); if(ds.status==="absent")absences++; }
   }
   const usedLeaves=Math.min(2,absences), unusedLeaves=Math.max(0,2-absences);
   const lmDedDays=lm/10, lmDed=lmDedDays*oneDaySal;
   const leavePay=usedLeaves*540*perMin, unusedLeavePay=unusedLeaves*540*perMin;
   const est=Math.max(0, worked*perMin + ot*perMin + leavePay + unusedLeavePay - lmDed);
+  return {totalMins,perMin,oneDaySal,worked,ded,lm,ot,absences,usedLeaves,unusedLeaves,lmDedDays,lmDed,leavePay,unusedLeavePay,est,personalTotal,unapprovedOtMins,rejectedOtMins,dr,days};
   return {totalMins,perMin,oneDaySal,worked,ded,lm,ot,absences,usedLeaves,unusedLeaves,lmDedDays,lmDed,leavePay,unusedLeavePay,est,personalTotal,unapprovedOtMins,dr,days};
 }
 
@@ -438,6 +446,8 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
           <div style={{background:C.card,margin:"3px 12px",borderRadius:12,padding:"10px 14px",border:`1px solid ${C.border}`}}>
             <StatRow l="Total Late Minutes" v={fmtMins(lateMinsTotal)} c={lateMinsTotal>0?C.red:C.green}/>
             <StatRow l="Total Personal Minutes" v={fmtMins(stats.personalTotal)} c={stats.personalTotal>0?C.orange:C.green}/>
+            <StatRow l="OT Approved Minutes" v={fmtMins(stats.ot)} c={stats.ot>0?C.purple:C.green}/>
+            <StatRow l="OT Rejected Minutes" v={fmtMins(stats.rejectedOtMins)} c={stats.rejectedOtMins>0?C.red:C.green}/>
             <StatRow l="OT Not Received Minutes" v={fmtMins(stats.unapprovedOtMins)} c={stats.unapprovedOtMins>0?C.orange:C.green}/>
             <StatRow l="Total Deducted Minutes" v={fmtMins(stats.ded)} c={stats.ded>0?C.red:C.green}/>
             <StatRow l="OT Approval Pending Days" v={`${pendingOtDays} day(s)`} c={pendingOtDays>0?C.blue:C.green} last/>
