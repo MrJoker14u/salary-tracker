@@ -442,10 +442,14 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
       {(()=>{
         const lateMinsTotal = stats.dr.reduce((sum,day)=>sum+(day.mLate||0),0);
         const pendingOtDays = stats.dr.filter(day=>day.otStatus===OT_STATUS.PENDING).length;
+        const rejectedOtMins = stats.dr.reduce((sum,day)=>sum+(day.otStatus===OT_STATUS.REJECTED ? day.otMins||0 : 0),0);
+        const approvedOtMins = stats.ot||0;
         return (
           <div style={{background:C.card,margin:"3px 12px",borderRadius:12,padding:"10px 14px",border:`1px solid ${C.border}`}}>
             <StatRow l="Total Late Minutes" v={fmtMins(lateMinsTotal)} c={lateMinsTotal>0?C.red:C.green}/>
             <StatRow l="Total Personal Minutes" v={fmtMins(stats.personalTotal)} c={stats.personalTotal>0?C.orange:C.green}/>
+            <StatRow l="OT Approved Minutes" v={fmtMins(approvedOtMins)} c={approvedOtMins>0?C.purple:C.green}/>
+            <StatRow l="OT Rejected Minutes" v={fmtMins(rejectedOtMins)} c={rejectedOtMins>0?C.red:C.green}/>
             <StatRow l="OT Approved Minutes" v={fmtMins(stats.ot)} c={stats.ot>0?C.purple:C.green}/>
             <StatRow l="OT Rejected Minutes" v={fmtMins(stats.rejectedOtMins)} c={stats.rejectedOtMins>0?C.red:C.green}/>
             <StatRow l="OT Not Received Minutes" v={fmtMins(stats.unapprovedOtMins)} c={stats.unapprovedOtMins>0?C.orange:C.green}/>
