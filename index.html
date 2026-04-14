@@ -179,10 +179,10 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
   const lastPunchMins = validPunches.length ? t2m(validPunches[validPunches.length-1]) : 0;
   const hasOT = !absent && lastPunchMins > dayEnd;
   const otUi = otA===true
-    ? {accent:C.purple,bg:C.purple+"15",border:C.purple+"33",label:"✅ OT Approved"}
+    ? {accent:C.purple,bg:C.purple+"15",border:C.purple+"33",label:"OT Yes (Approved)"}
     : otA===false
-      ? {accent:C.red,bg:C.red+"12",border:C.red+"33",label:"❌ OT Rejected"}
-      : {accent:C.blue,bg:C.blue+"15",border:C.blue+"33",label:"OT? Pending"};
+      ? {accent:C.red,bg:C.red+"12",border:C.red+"33",label:"OT No (Rejected)"}
+      : {accent:C.blue,bg:C.blue+"15",border:C.blue+"33",label:"OT Pending"};
 
   const handleSave = () => {
     if (absent) { onSave({absent:true}); return; }
@@ -275,9 +275,9 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
             <div style={{fontSize:13,color:otUi.accent,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {isSat?"1:30 PM":"7:00 PM"}</div>
             <div style={{fontSize:11,color:otUi.accent,marginBottom:10}}>{otUi.label}</div>
             <div style={{display:"flex",gap:8}}>
-              <Pill label="✅ Approve" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
-              <Pill label="✅ Approved" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
-              <Pill label="❌ Rejected" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
+              <Pill label="OT Yes" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
+              <Pill label="OT Approved" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
+              <Pill label="OT No" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
             </div>
           </div>}
 
@@ -370,8 +370,8 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
     const ds=stats.dr.find(r=>r.d===d);
     if(!ds) return {size:5,shadow:"none",label:""};
     if(ds.otStatus===OT_STATUS.PENDING) return {size:7,shadow:`0 0 8px ${C.blue}99`,label:"OT?"};
-    if(ds.otStatus===OT_STATUS.APPROVED) return {size:5,shadow:"none",label:"OT✅"};
-    if(ds.otStatus===OT_STATUS.REJECTED) return {size:5,shadow:"none",label:"OT❌"};
+    if(ds.otStatus===OT_STATUS.APPROVED) return {size:5,shadow:"none",label:"OT Yes"};
+    if(ds.otStatus===OT_STATUS.REJECTED) return {size:5,shadow:"none",label:"OT No"};
     return {size:5,shadow:"none",label:""};
   };
   const getCellBg = d => {
@@ -422,7 +422,7 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
       </div>
 
       <div style={{display:"flex",gap:12,padding:"10px 16px 0",flexWrap:"wrap"}}>
-        {[[C.green,"Present"],[C.red,"Absent/LM/OT❌"],[C.orange,"Leave Rep."],[C.blue,"OT?"],[C.purple,"OT✅"],[C.amber,"Today"]].map(([c,l])=>(
+        {[[C.green,"Present"],[C.red,"Absent/LM/OT No"],[C.orange,"Leave Rep."],[C.blue,"OT?"],[C.purple,"OT Yes"],[C.amber,"Today"]].map(([c,l])=>(
           <div key={l} style={{display:"flex",alignItems:"center",gap:4}}>
             <div style={{width:6,height:6,borderRadius:"50%",background:c}}/>
             <span style={{fontSize:10,color:C.textDim}}>{l}</span>
