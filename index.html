@@ -30,7 +30,7 @@ const {useState,useMemo,useEffect,useCallback,useRef} = React;
 const WORK_START = 9*60, WORK_END = 19*60, SAT_END = 13*60+30;
 const LUNCH_MAX = 60, LATE_MIN = 15, LEAVE_MIN = 120, NOON = 12*60, MIN_LUNCH_GAP = 30;
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-const OT_STATUS = { PENDING:"OT_PENDING", APPROVED:"OT_APPROVED", NONE:"NO_OT" };
+const OT_STATUS = { PENDING:"OT_PENDING", APPROVED:"OT_APPROVED", REJECTED:"OT_REJECTED", NONE:"NO_OT" };
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
 const C = {
@@ -132,6 +132,13 @@ function calcDay(rawEntry, y, mo, d) {
   const otPending = otMins>0 && (entry.otA===null || entry.otA===undefined);
   const otStatus = ot>0 ? OT_STATUS.APPROVED : otPending ? OT_STATUS.PENDING : OT_STATUS.NONE;
   const otStatus = otMins>0 && ot===0 ? OT_STATUS.PENDING : ot>0 ? OT_STATUS.APPROVED : OT_STATUS.NONE;
+  const otStatus = otMins<=0
+    ? OT_STATUS.NONE
+    : entry.otA===true
+      ? OT_STATUS.APPROVED
+      : entry.otA===false
+        ? OT_STATUS.REJECTED
+        : OT_STATUS.PENDING;
 
   return {isSun,isSat,scheduled,worked,deducted,lm,ot,otMins,otStatus,
           mLate,lunchGap,lunchOver,personalMins,gaps,lunchIdx,status};
@@ -180,9 +187,9 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
   const lastPunchMins = validPunches.length ? t2m(validPunches[validPunches.length-1]) : 0;
   const hasOT = !absent && lastPunchMins > dayEnd;
   const otUi = otA===true
-    ? {accent:C.purple,bg:C.purple+"15",border:C.purple+"33",label:"OT✓ Approved"}
+    ? {accent:C.purple,bg:C.purple+"15",border:C.purple+"33",label:"✅ OT Approved"}
     : otA===false
-      ? {accent:C.textDim,bg:C.card2,border:C.border,label:"OT Not Approved"}
+      ? {accent:C.red,bg:C.red+"12",border:C.red+"33",label:"❌ OT Rejected"}
       : {accent:C.blue,bg:C.blue+"15",border:C.blue+"33",label:"OT? Pending"};
 
   const handleSave = () => {
@@ -279,6 +286,9 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
               <Pill label="✓ Approved" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
               <Pill label="✗ Rejected" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
               <Pill label="✗ Not Approved" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
+              <Pill label="✅ Approve" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
+              <Pill label="✅ Approved" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
+              <Pill label="❌ Rejected" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
             </div>
           </div>}
 
@@ -312,7 +322,7 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
                 ["Hours Worked", fmtMins(ds.worked+ds.ot), C.teal],
                 ["OT",           otA===true?`+${fmtMins(ds.ot)}`:hasOT?(otA===false?"Rejected":"Pending"):"—", otA===true?C.purple:otA===false?C.textDim:hasOT?C.blue:C.textDim],
                 ["Hours Worked", fmtMins(ds.worked), C.teal],
-                ["OT",           otA===true?`+${fmtMins(ds.ot)}`:hasOT?(otA===false?"Not Approved":"Pending"):"—", otA===true?C.purple:otA===false?C.textDim:hasOT?C.blue:C.textDim],
+                ["OT",           otA===true?`+${fmtMins(ds.ot)}`:hasOT?(otA===false?"Rejected":"Pending"):"—", otA===true?C.purple:otA===false?C.textDim:hasOT?C.blue:C.textDim],
               ].map(([l,v,c])=>(
                 <div key={l} style={{background:C.bg,borderRadius:8,padding:"8px 6px",textAlign:"center"}}>
                   <div style={{fontSize:12,fontWeight:700,color:c,fontFamily:"'DM Mono'",marginBottom:2}}>{v}</div>
@@ -338,20 +348,28 @@ function calcMonthStats(yr,mo,att,salary,holidays=[]) {
   const perMin = totalMins>0 ? salary/totalMins : 0;
   const dayEq = totalMins/540;
   const oneDaySal = dayEq>0 ? salary/dayEq : 0;
-  let worked=0,ded=0,lm=0,ot=0,absences=0,personalTotal=0;
+  let worked=0,ded=0,lm=0,ot=0,absences=0,personalTotal=0,unapprovedOtMins=0,rejectedOtMins=0;
+  let worked=0,ded=0,lm=0,ot=0,absences=0,personalTotal=0,unapprovedOtMins=0;
   const dr=[];
   for(let d=1;d<=days;d++){
     const key=`${yr}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
     const e = att[key]||null;
     const ds = calcDay(e,yr,mo,d);
     dr.push({d,...ds});
-    if(!ds.isSun){ worked+=ds.worked;ded+=ds.deducted;lm+=ds.lm;ot+=ds.ot;personalTotal+=ds.personalMins; if(ds.status==="absent")absences++; }
+    if(!ds.isSun){
+      worked+=ds.worked;ded+=ds.deducted;lm+=ds.lm;ot+=ds.ot;personalTotal+=ds.personalMins;
+      unapprovedOtMins+=Math.max(0,ds.otMins-ds.ot);
+      if(ds.otStatus===OT_STATUS.REJECTED) rejectedOtMins+=ds.otMins;
+      if(ds.status==="absent")absences++;
+    }
+    if(!ds.isSun){ worked+=ds.worked;ded+=ds.deducted;lm+=ds.lm;ot+=ds.ot;personalTotal+=ds.personalMins; unapprovedOtMins+=Math.max(0,ds.otMins-ds.ot); if(ds.status==="absent")absences++; }
   }
   const usedLeaves=Math.min(2,absences), unusedLeaves=Math.max(0,2-absences);
   const lmDedDays=lm/10, lmDed=lmDedDays*oneDaySal;
   const leavePay=usedLeaves*540*perMin, unusedLeavePay=unusedLeaves*540*perMin;
   const est=Math.max(0, worked*perMin + ot*perMin + leavePay + unusedLeavePay - lmDed);
-  return {totalMins,perMin,oneDaySal,worked,ded,lm,ot,absences,usedLeaves,unusedLeaves,lmDedDays,lmDed,leavePay,unusedLeavePay,est,personalTotal,dr,days};
+  return {totalMins,perMin,oneDaySal,worked,ded,lm,ot,absences,usedLeaves,unusedLeaves,lmDedDays,lmDed,leavePay,unusedLeavePay,est,personalTotal,unapprovedOtMins,rejectedOtMins,dr,days};
+  return {totalMins,perMin,oneDaySal,worked,ded,lm,ot,absences,usedLeaves,unusedLeaves,lmDedDays,lmDed,leavePay,unusedLeavePay,est,personalTotal,unapprovedOtMins,dr,days};
 }
 
 // ─── Month View ───────────────────────────────────────────────────────────────
@@ -364,6 +382,7 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
     if(!ds||ds.status==="sunday"||ds.status==="empty") return "transparent";
     if(ds.otStatus===OT_STATUS.PENDING) return C.blue;
     if(ds.otStatus===OT_STATUS.APPROVED) return C.purple;
+    if(ds.otStatus===OT_STATUS.REJECTED) return C.red;
     if(ds.lm>0) return C.red;
     if(ds.status==="absent") return C.orange;
     return C.green;
@@ -372,7 +391,8 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
     const ds=stats.dr.find(r=>r.d===d);
     if(!ds) return {size:5,shadow:"none",label:""};
     if(ds.otStatus===OT_STATUS.PENDING) return {size:7,shadow:`0 0 8px ${C.blue}99`,label:"OT?"};
-    if(ds.otStatus===OT_STATUS.APPROVED) return {size:5,shadow:"none",label:"OT✓"};
+    if(ds.otStatus===OT_STATUS.APPROVED) return {size:5,shadow:"none",label:"OT✅"};
+    if(ds.otStatus===OT_STATUS.REJECTED) return {size:5,shadow:"none",label:"OT❌"};
     return {size:5,shadow:"none",label:""};
   };
   const getCellBg = d => {
@@ -423,7 +443,7 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
       </div>
 
       <div style={{display:"flex",gap:12,padding:"10px 16px 0",flexWrap:"wrap"}}>
-        {[[C.green,"Present"],[C.red,"Absent/LM"],[C.orange,"Leave Rep."],[C.blue,"OT?"],[C.purple,"OT✓"],[C.amber,"Today"]].map(([c,l])=>(
+        {[[C.green,"Present"],[C.red,"Absent/LM/OT❌"],[C.orange,"Leave Rep."],[C.blue,"OT?"],[C.purple,"OT✅"],[C.amber,"Today"]].map(([c,l])=>(
           <div key={l} style={{display:"flex",alignItems:"center",gap:4}}>
             <div style={{width:6,height:6,borderRadius:"50%",background:c}}/>
             <span style={{fontSize:10,color:C.textDim}}>{l}</span>
@@ -435,10 +455,17 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
       {(()=>{
         const lateMinsTotal = stats.dr.reduce((sum,day)=>sum+(day.mLate||0),0);
         const pendingOtDays = stats.dr.filter(day=>day.otStatus===OT_STATUS.PENDING).length;
+        const rejectedOtMins = stats.dr.reduce((sum,day)=>sum+(day.otStatus===OT_STATUS.REJECTED ? day.otMins||0 : 0),0);
+        const approvedOtMins = stats.ot||0;
         return (
           <div style={{background:C.card,margin:"3px 12px",borderRadius:12,padding:"10px 14px",border:`1px solid ${C.border}`}}>
             <StatRow l="Total Late Minutes" v={fmtMins(lateMinsTotal)} c={lateMinsTotal>0?C.red:C.green}/>
             <StatRow l="Total Personal Minutes" v={fmtMins(stats.personalTotal)} c={stats.personalTotal>0?C.orange:C.green}/>
+            <StatRow l="OT Approved Minutes" v={fmtMins(approvedOtMins)} c={approvedOtMins>0?C.purple:C.green}/>
+            <StatRow l="OT Rejected Minutes" v={fmtMins(rejectedOtMins)} c={rejectedOtMins>0?C.red:C.green}/>
+            <StatRow l="OT Approved Minutes" v={fmtMins(stats.ot)} c={stats.ot>0?C.purple:C.green}/>
+            <StatRow l="OT Rejected Minutes" v={fmtMins(stats.rejectedOtMins)} c={stats.rejectedOtMins>0?C.red:C.green}/>
+            <StatRow l="OT Not Received Minutes" v={fmtMins(stats.unapprovedOtMins)} c={stats.unapprovedOtMins>0?C.orange:C.green}/>
             <StatRow l="Total Deducted Minutes" v={fmtMins(stats.ded)} c={stats.ded>0?C.red:C.green}/>
             <StatRow l="OT Approval Pending Days" v={`${pendingOtDays} day(s)`} c={pendingOtDays>0?C.blue:C.green} last/>
           </div>
