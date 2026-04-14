@@ -275,6 +275,7 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
             <div style={{fontSize:13,color:otUi.accent,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {isSat?"1:30 PM":"7:00 PM"}</div>
             <div style={{fontSize:11,color:otUi.accent,marginBottom:10}}>{otUi.label}</div>
             <div style={{display:"flex",gap:8}}>
+              <Pill label="✅ Approve" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
               <Pill label="✅ Approved" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
               <Pill label="❌ Rejected" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
             </div>
@@ -308,7 +309,7 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
                 ["Personal",     ds.personalMins>0?`-${fmtMins(ds.personalMins)}`:"None", ds.personalMins>0?C.red:C.green],
                 ["Late Marks",   `${ds.lm} 🔴`, ds.lm>0?C.red:C.green],
                 ["Hours Worked", fmtMins(ds.worked), C.teal],
-                ["OT",           otA===true?`+${fmtMins(ds.ot)}`:hasOT?(otA===false?"Not Approved":"Pending"):"—", otA===true?C.purple:otA===false?C.textDim:hasOT?C.blue:C.textDim],
+                ["OT",           otA===true?`+${fmtMins(ds.ot)}`:hasOT?(otA===false?"Rejected":"Pending"):"—", otA===true?C.purple:otA===false?C.textDim:hasOT?C.blue:C.textDim],
               ].map(([l,v,c])=>(
                 <div key={l} style={{background:C.bg,borderRadius:8,padding:"8px 6px",textAlign:"center"}}>
                   <div style={{fontSize:12,fontWeight:700,color:c,fontFamily:"'DM Mono'",marginBottom:2}}>{v}</div>
