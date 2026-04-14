@@ -276,6 +276,7 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
             <div style={{fontSize:11,color:otUi.accent,marginBottom:10}}>{otUi.label}</div>
             <div style={{display:"flex",gap:8}}>
               <Pill label="✅ Approve" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
+              <Pill label="✅ Approved" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
               <Pill label="❌ Rejected" active={otA===false} color={C.red} onClick={()=>saveOtDecision(false)}/>
             </div>
           </div>}
