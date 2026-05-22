@@ -78,8 +78,7 @@ function calcDay(rawEntry, y, mo, d) {
   const base = {isSun,isSat,scheduled,worked:0,deducted:0,lm:0,ot:0,otMins:0,otStatus:OT_STATUS.NONE,
                 mLate:0,lunchGap:0,lunchOver:0,personalMins:0,gaps:[],lunchIdx:-1,status:"empty"};
 
-  if (isSun) return {...base, status:"sunday"};
-  if (!rawEntry || rawEntry.absent) return {...base, status:"absent"};
+  if (!rawEntry || rawEntry.absent) return {...base, status:isSun?"sunday":"absent"};
 
   const entry = legacyToNew(rawEntry);
   const punches = (entry.punches||[]).map(t2m).filter(x=>x!==null).sort((a,b)=>a-b);
@@ -87,6 +86,16 @@ function calcDay(rawEntry, y, mo, d) {
 
   const firstPunch = punches[0];
   const lastPunch  = punches[punches.length-1];
+
+  if (isSun) {
+    const gaps = [];
+    for (let i=1; i+1<punches.length; i+=2) {
+      gaps.push({ outTime: punches[i], inTime: punches[i+1], duration: punches[i+1]-punches[i] });
+    }
+    const breakMins = gaps.reduce((sum,g)=>sum+g.duration,0);
+    const worked = Math.max(0, (lastPunch-firstPunch)-breakMins);
+    return { ...base, worked, ot:worked, otMins:worked, otStatus:worked>0?OT_STATUS.APPROVED:OT_STATUS.NONE, gaps, status:worked>0?"present":"sunday" };
+  }
 
   // ── Morning late ──
   const mLate = Math.max(0, firstPunch - WORK_START);
@@ -197,20 +206,6 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
   const overlay = {position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center",backdropFilter:"blur(4px)"};
   const sheet = {background:C.card,borderRadius:"24px 24px 0 0",width:"100%",maxWidth:480,maxHeight:"92vh",overflowY:"auto",padding:"8px 20px 40px",border:`1px solid ${C.border}`};
 
-  if (isSun) return (
-    <div style={overlay} onClick={onClose}>
-      <div style={sheet} onClick={e=>e.stopPropagation()}>
-        <div style={{width:40,height:4,background:C.border,borderRadius:2,margin:"12px auto 20px"}}/>
-        <div style={{textAlign:"center",padding:"20px 0 32px"}}>
-          <div style={{fontSize:48,marginBottom:12}}>🌴</div>
-          <div style={{fontSize:18,fontWeight:700,color:C.textBright,marginBottom:6}}>{dateStr}</div>
-          <div style={{fontSize:14,color:C.textDim}}>Sunday — Full Day Holiday</div>
-        </div>
-        <button style={{width:"100%",padding:15,borderRadius:14,border:"none",cursor:"pointer",background:C.amber,color:"#000",fontWeight:800,fontSize:15}} onClick={onClose}>Close</button>
-      </div>
-    </div>
-  );
-
   return (
     <div style={overlay} onClick={onClose}>
       <div style={sheet} onClick={e=>e.stopPropagation()}>
@@ -221,7 +216,7 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
           <div>
             <div style={{fontSize:16,fontWeight:700,color:C.textBright}}>{dateStr}</div>
             <div style={{fontSize:11,color:C.textDim,marginTop:2}}>
-              {isSat?"Saturday — Half Day (9:00–13:30)":"Weekday — Full Day (9:00–19:00)"}
+              {isSun?"Sunday — Holiday (All Work Counts as OT)":isSat?"Saturday — Half Day (9:00–13:30)":"Weekday — Full Day (9:00–19:00)"}
               {isToday&&<span style={{color:C.amber,marginLeft:6}}>• Today</span>}
             </div>
           </div>
@@ -342,7 +337,8 @@ function calcMonthStats(yr,mo,att,salary,holidays=[]) {
     const e = att[key]||null;
     const ds = calcDay(e,yr,mo,d);
     dr.push({d,...ds});
-    if(!ds.isSun){ worked+=ds.worked;ded+=ds.deducted;lm+=ds.lm;ot+=ds.ot;personalTotal+=ds.personalMins; unapprovedOtMins+=Math.max(0,ds.otMins-ds.ot); if(ds.status==="absent")absences++; }
+    ot+=ds.ot;
+    if(!ds.isSun){ worked+=ds.worked;ded+=ds.deducted;lm+=ds.lm;personalTotal+=ds.personalMins; unapprovedOtMins+=Math.max(0,ds.otMins-ds.ot); if(ds.status==="absent")absences++; }
   }
   const usedLeaves=Math.min(2,absences), unusedLeaves=Math.max(0,2-absences);
   const lmDedDays=lm/10, lmDed=lmDedDays*oneDaySal;
@@ -407,7 +403,7 @@ function MonthView({yr,mo,stats,getE,openDay,now}) {
             const d=i+1,dow=getDow(yr,mo,d),isSun=dow===0,isSat=dow===6,isToday=d===todayD;
             const ds=stats.dr.find(r=>r.d===d);
             return (
-              <div key={d} onClick={()=>!isSun&&openDay(d)} style={{minHeight:52,borderRadius:10,padding:"6px 4px 4px",background:getCellBg(d),border:isToday?`2px solid ${C.amber}`:`1px solid ${C.border}22`,cursor:isSun?"default":"pointer",display:"flex",flexDirection:"column",alignItems:"center",opacity:isSun?0.3:1,position:"relative"}}>
+              <div key={d} onClick={()=>openDay(d)} style={{minHeight:52,borderRadius:10,padding:"6px 4px 4px",background:getCellBg(d),border:isToday?`2px solid ${C.amber}`:`1px solid ${C.border}22`,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",opacity:isSun&&ds?.status==="sunday"?0.3:1,position:"relative"}}>
                 {ds?.lm>0&&<div title={`Late Marks: ${ds.lm}`} style={{position:"absolute",top:4,right:4,width:6,height:6,borderRadius:"50%",background:C.red,boxShadow:`0 0 6px ${C.red}88`}}/>}
                 <div style={{fontSize:13,fontWeight:700,color:isToday?C.amber:isSun?C.red:C.textBright,lineHeight:1}}>{d}</div>
                 {isSat&&<div style={{fontSize:8,color:C.textDim,marginTop:1}}>½</div>}
