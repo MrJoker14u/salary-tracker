@@ -14,8 +14,8 @@
   html,body,#root{min-height:100%;background:#060a10;}
   body{font-family:'Syne',sans-serif;-webkit-tap-highlight-color:transparent;}
   ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-thumb{background:#1a2840;border-radius:2px;}
-  input[type=time]{background:#0f1828;border:1px solid #1a2840;color:#dde9f7;padding:10px 12px;border-radius:10px;font-family:'DM Mono',monospace;font-size:14px;width:100%;outline:none;-webkit-appearance:none;appearance:none;}
-  input[type=time]:focus,input[type=number]:focus{border-color:#f59e0b!important;box-shadow:0 0 0 3px rgba(245,158,11,0.12);}
+  input[type=time],select{background:#0f1828;border:1px solid #1a2840;color:#dde9f7;padding:10px 12px;border-radius:10px;font-family:'DM Mono',monospace;font-size:14px;width:100%;outline:none;-webkit-appearance:none;appearance:none;}
+  input[type=time]:focus,input[type=number]:focus,select:focus{border-color:#f59e0b!important;box-shadow:0 0 0 3px rgba(245,158,11,0.12);}
   input[type=number]{-moz-appearance:textfield;}input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
   button{font-family:'Syne',sans-serif;transition:opacity 0.15s,transform 0.1s;}
   button:active{opacity:0.8;transform:scale(0.97);}
@@ -28,6 +28,14 @@ const {useState,useMemo,useEffect,useCallback,useRef} = React;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const WORK_START = 9*60, WORK_END = 19*60, SAT_END = 13*60+30;
+const DEFAULT_SHIFT_ID = "9-7";
+const SHIFT_PRESETS = [
+  {id:"9-7", label:"9:00 AM – 7:00 PM", start:9*60, end:19*60},
+  {id:"8-6", label:"8:00 AM – 6:00 PM", start:8*60, end:18*60},
+  {id:"10-8", label:"10:00 AM – 8:00 PM", start:10*60, end:20*60},
+  {id:"11-9", label:"11:00 AM – 9:00 PM", start:11*60, end:21*60},
+  {id:"custom", label:"Custom shift", start:WORK_START, end:WORK_END},
+];
 const LUNCH_MAX = 60, LATE_MIN = 15, LEAVE_MIN = 120, NOON = 12*60, MIN_LUNCH_GAP = 30;
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const OT_STATUS = { PENDING:"OT_PENDING", APPROVED:"OT_APPROVED", REJECTED:"OT_REJECTED", NONE:"NO_OT" };
@@ -47,6 +55,20 @@ const fmtMins = m => { if(!m||m===0) return "0m"; return `${Math.abs(m)}m`; };
 const fmtINR = n => "₹"+Math.round(n).toLocaleString("en-IN");
 const getDays = (y,mo) => new Date(y,mo+1,0).getDate();
 const getDow = (y,mo,d) => new Date(y,mo,d).getDay();
+
+const getShift = entry => {
+  const id = entry?.shiftId || DEFAULT_SHIFT_ID;
+  const preset = SHIFT_PRESETS.find(s=>s.id===id) || SHIFT_PRESETS[0];
+  const rawStart = id==="custom" ? t2m(entry?.shiftStart) : preset.start;
+  const rawEnd = id==="custom" ? t2m(entry?.shiftEnd) : preset.end;
+  const start = rawStart ?? WORK_START;
+  let end = rawEnd ?? WORK_END;
+  if (end <= start) end += 24*60;
+  const scheduled = Math.max(0, (end-start)-LUNCH_MAX);
+  return {id, label:preset.label, start, end, scheduled};
+};
+const getShiftLabel = shift => `${m2t(shift.start)}–${m2t(shift.end%1440)}`;
+const getSatEnd = shift => shift.start + Math.min(270, shift.scheduled || 270);
 const getMonthMins = (y,mo,holidays=[]) => {
   let full=0,sat=0;
   for(let d=1;d<=getDays(y,mo);d++){
@@ -73,14 +95,14 @@ function legacyToNew(entry) {
 // ─── Core Day Calculation ─────────────────────────────────────────────────────
 function calcDay(rawEntry, y, mo, d) {
   const w = getDow(y,mo,d), isSun=w===0, isSat=w===6;
-  const scheduled = isSun?0:isSat?270:540;
-  const dayEnd = isSat?SAT_END:WORK_END;
-  const base = {isSun,isSat,scheduled,worked:0,deducted:0,lm:0,ot:0,otMins:0,otStatus:OT_STATUS.NONE,
+  const entry = legacyToNew(rawEntry);
+  const shift = getShift(entry);
+  const scheduled = isSun?0:isSat?Math.min(270,shift.scheduled):shift.scheduled;
+  const dayEnd = isSat?getSatEnd(shift):shift.end;
+  const base = {isSun,isSat,shift,scheduled,worked:0,deducted:0,lm:0,ot:0,otMins:0,otStatus:OT_STATUS.NONE,
                 mLate:0,lunchGap:0,lunchOver:0,personalMins:0,gaps:[],lunchIdx:-1,status:"empty"};
 
-  if (!rawEntry || rawEntry.absent) return {...base, status:isSun?"sunday":"absent"};
-
-  const entry = legacyToNew(rawEntry);
+  if (!entry || entry.absent) return {...base, status:isSun?"sunday":"absent"};
   const punches = (entry.punches||[]).map(t2m).filter(x=>x!==null).sort((a,b)=>a-b);
   if (punches.length === 0) return {...base, status:"absent"};
 
@@ -98,7 +120,7 @@ function calcDay(rawEntry, y, mo, d) {
   }
 
   // ── Morning late ──
-  const mLate = Math.max(0, firstPunch - WORK_START);
+  const mLate = Math.max(0, firstPunch - shift.start);
 
   // ── Build OUT→IN gaps (punches alternate IN/OUT/IN/OUT...) ──
   // Gap i lives between punches[2i+1] (OUT) and punches[2i+2] (IN)
@@ -174,17 +196,21 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
   const initEntry = legacyToNew(entry);
   const [absent, setAbsent] = useState(initEntry?.absent||false);
   const [punches, setPunches] = useState(initEntry?.punches||[""]);
+  const [shiftId, setShiftId] = useState(initEntry?.shiftId||DEFAULT_SHIFT_ID);
+  const [shiftStart, setShiftStart] = useState(initEntry?.shiftStart||m2t(WORK_START));
+  const [shiftEnd, setShiftEnd] = useState(initEntry?.shiftEnd||m2t(WORK_END));
   const [lr, setLr] = useState(initEntry?.lr||false);
   const [otA, setOtA] = useState(initEntry?.otA??null);
 
-  const ds = useMemo(()=>calcDay(absent?{absent:true}:{punches:punches.filter(p=>p&&p.length>0),lr,otA},yr,mo,day),[punches,absent,lr,otA,yr,mo,day]);
+  const entryDraft = {punches:punches.filter(p=>p&&p.length>0),shiftId,shiftStart,shiftEnd,lr,otA};
+  const ds = useMemo(()=>calcDay(absent?{absent:true,shiftId,shiftStart,shiftEnd}:entryDraft,yr,mo,day),[punches,absent,shiftId,shiftStart,shiftEnd,lr,otA,yr,mo,day]);
 
   const addPunch = () => setPunches(p=>[...p,""]);
   const removePunch = i => setPunches(p=>p.filter((_,idx)=>idx!==i));
   const setPunch = (i,v) => setPunches(p=>{const n=[...p];n[i]=v;return n;});
 
   const validPunches = punches.filter(p=>p&&p.length>0);
-  const dayEnd = isSat ? SAT_END : WORK_END;
+  const dayEnd = ds.shift ? (isSat ? getSatEnd(ds.shift) : ds.shift.end) : (isSat ? SAT_END : WORK_END);
   const lastPunchMins = validPunches.length ? t2m(validPunches[validPunches.length-1]) : 0;
   const hasOT = !absent && lastPunchMins > dayEnd;
   const otUi = otA===true
@@ -194,13 +220,14 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
       : {accent:C.blue,bg:C.blue+"15",border:C.blue+"33",label:"OT Pending"};
 
   const handleSave = () => {
-    if (absent) { onSave({absent:true}); return; }
-    onSave({punches: validPunches, lr, otA: hasOT ? otA : null});
+    const shiftData = {shiftId, shiftStart, shiftEnd};
+    if (absent) { onSave({absent:true, ...shiftData}); return; }
+    onSave({punches: validPunches, ...shiftData, lr, otA: hasOT ? otA : null});
   };
   const saveOtDecision = val => {
     setOtA(val);
     if (absent || !hasOT) return;
-    onSave({punches: validPunches, lr, otA: val});
+    onSave({punches: validPunches, shiftId, shiftStart, shiftEnd, lr, otA: val});
   };
 
   const overlay = {position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center",backdropFilter:"blur(4px)"};
@@ -216,7 +243,7 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
           <div>
             <div style={{fontSize:16,fontWeight:700,color:C.textBright}}>{dateStr}</div>
             <div style={{fontSize:11,color:C.textDim,marginTop:2}}>
-              {isSun?"Sunday — Holiday (All Work Counts as OT)":isSat?"Saturday — Half Day (9:00–13:30)":"Weekday — Full Day (9:00–19:00)"}
+              {isSun?"Sunday — Holiday (All Work Counts as OT)":isSat?`Saturday — Half Day (${m2t(ds.shift.start)}–${m2t(getSatEnd(ds.shift)%1440)})`:`Weekday — ${getShiftLabel(ds.shift)}`}
               {isToday&&<span style={{color:C.amber,marginLeft:6}}>• Today</span>}
             </div>
           </div>
@@ -230,6 +257,27 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
         </div>
 
         {!absent && <>
+          {/* Shift Selection */}
+          <Label>Shift Timing</Label>
+          <div style={{background:C.bg,borderRadius:12,padding:12,marginBottom:14}}>
+            <select value={shiftId} onChange={e=>setShiftId(e.target.value)} style={{marginBottom:shiftId==="custom"?10:0}}>
+              {SHIFT_PRESETS.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
+            </select>
+            {shiftId==="custom"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div>
+                <Label>Start</Label>
+                <input type="time" value={shiftStart} onChange={e=>setShiftStart(e.target.value)}/>
+              </div>
+              <div>
+                <Label>End</Label>
+                <input type="time" value={shiftEnd} onChange={e=>setShiftEnd(e.target.value)}/>
+              </div>
+            </div>}
+            <div style={{fontSize:10,color:C.textDim,marginTop:10,lineHeight:1.5}}>
+              Shift start decides late marks. Shift end decides OT. Saturday is counted as half day from shift start.
+            </div>
+          </div>
+
           {/* Punch Times */}
           <Label>Punch Times</Label>
           <div style={{background:C.bg,borderRadius:12,padding:12,marginBottom:14}}>
@@ -267,7 +315,7 @@ function DayModal({yr,mo,day,entry,onSave,onClose}) {
 
           {/* OT Banner */}
           {hasOT&&<div style={{background:otUi.bg,border:`1px solid ${otUi.border}`,borderRadius:12,padding:14,marginBottom:14}}>
-            <div style={{fontSize:13,color:otUi.accent,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {isSat?"1:30 PM":"7:00 PM"}</div>
+            <div style={{fontSize:13,color:otUi.accent,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {m2t(dayEnd%1440)}</div>
             <div style={{fontSize:11,color:otUi.accent,marginBottom:10}}>{otUi.label}</div>
             <div style={{display:"flex",gap:8}}>
               <Pill label="OT Yes" active={otA===true} color={C.green} onClick={()=>saveOtDecision(true)}/>
