@@ -36,7 +36,6 @@ const SHIFT_PRESETS = [
   {id:"11-9", label:"11:00 AM – 9:00 PM", start:11*60, end:21*60},
   {id:"custom", label:"Custom shift", start:WORK_START, end:WORK_END},
 ];
-const DEFAULT_SHIFT = {shiftId:DEFAULT_SHIFT_ID, shiftStart:"09:00", shiftEnd:"19:00"};
 const LUNCH_MAX = 60, LATE_MIN = 15, LEAVE_MIN = 120, NOON = 12*60, MIN_LUNCH_GAP = 30;
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const OT_STATUS = { PENDING:"OT_PENDING", APPROVED:"OT_APPROVED", REJECTED:"OT_REJECTED", NONE:"NO_OT" };
@@ -52,12 +51,6 @@ const C = {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const t2m = t => { if(!t||!String(t).includes(":")) return null; const [h,m]=String(t).split(":").map(Number); return h*60+m; };
 const m2t = m => { if(m==null) return ""; const h=Math.floor(m/60),mn=m%60; return `${String(h).padStart(2,"0")}:${String(mn).padStart(2,"0")}`; };
-const fmtClock = m => {
-  if(m==null) return "";
-  const total=((m%1440)+1440)%1440, h=Math.floor(total/60), mn=total%60;
-  const h12=h%12||12, ampm=h<12?"AM":"PM";
-  return `${h12}:${String(mn).padStart(2,"0")} ${ampm}`;
-};
 const fmtMins = m => { if(!m||m===0) return "0m"; return `${Math.abs(m)}m`; };
 const fmtINR = n => "₹"+Math.round(n).toLocaleString("en-IN");
 const getDays = (y,mo) => new Date(y,mo+1,0).getDate();
@@ -74,10 +67,6 @@ const getShift = entry => {
   const scheduled = Math.max(0, (end-start)-LUNCH_MAX);
   return {id, label:preset.label, start, end, scheduled};
 };
-const getShiftLabel = shift => `${fmtClock(shift.start)} – ${fmtClock(shift.end)}`;
-const getSatEnd = shift => shift.start + Math.min(270, shift.scheduled || 270);
-const getMonthMins = (y,mo,holidays=[],shiftConfig=DEFAULT_SHIFT) => {
-  const shift = getShift(shiftConfig);
 const getShiftLabel = shift => `${m2t(shift.start)}–${m2t(shift.end%1440)}`;
 const getSatEnd = shift => shift.start + Math.min(270, shift.scheduled || 270);
 const getMonthMins = (y,mo,holidays=[]) => {
@@ -88,7 +77,7 @@ const getMonthMins = (y,mo,holidays=[]) => {
     if(w===0||holidays.includes(key)) continue;
     w===6?sat++:full++;
   }
-  return full*shift.scheduled+sat*Math.min(270,shift.scheduled);
+  return full*540+sat*270;
 };
 
 // ─── Legacy entry converter ───────────────────────────────────────────────────
@@ -104,10 +93,9 @@ function legacyToNew(entry) {
 }
 
 // ─── Core Day Calculation ─────────────────────────────────────────────────────
-function calcDay(rawEntry, y, mo, d, shiftConfig=DEFAULT_SHIFT) {
+function calcDay(rawEntry, y, mo, d) {
   const w = getDow(y,mo,d), isSun=w===0, isSat=w===6;
   const entry = legacyToNew(rawEntry);
-  const shift = getShift(shiftConfig);
   const shift = getShift(entry);
   const scheduled = isSun?0:isSat?Math.min(270,shift.scheduled):shift.scheduled;
   const dayEnd = isSat?getSatEnd(shift):shift.end;
@@ -180,7 +168,7 @@ function calcDay(rawEntry, y, mo, d, shiftConfig=DEFAULT_SHIFT) {
         ? OT_STATUS.REJECTED
         : OT_STATUS.PENDING;
 
-  return {isSun,isSat,shift,scheduled,worked,deducted,lm,ot,otMins,otStatus,
+  return {isSun,isSat,scheduled,worked,deducted,lm,ot,otMins,otStatus,
           mLate,lunchGap,lunchOver,personalMins,gaps,lunchIdx,status};
 }
 
@@ -199,7 +187,7 @@ const Pill = ({label,active,color,onClick}) => (
 );
 
 // ─── Day Entry Modal ──────────────────────────────────────────────────────────
-function DayModal({yr,mo,day,entry,shiftConfig,onSave,onClose}) {
+function DayModal({yr,mo,day,entry,onSave,onClose}) {
   const dow=getDow(yr,mo,day), isSat=dow===6, isSun=dow===0;
   const dateStr = new Date(yr,mo,day).toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"long",year:"numeric"});
   const isToday = new Date().toDateString()===new Date(yr,mo,day).toDateString();
@@ -214,8 +202,6 @@ function DayModal({yr,mo,day,entry,shiftConfig,onSave,onClose}) {
   const [lr, setLr] = useState(initEntry?.lr||false);
   const [otA, setOtA] = useState(initEntry?.otA??null);
 
-  const entryDraft = {punches:punches.filter(p=>p&&p.length>0),lr,otA};
-  const ds = useMemo(()=>calcDay(absent?{absent:true}:entryDraft,yr,mo,day,shiftConfig),[punches,absent,lr,otA,yr,mo,day,shiftConfig]);
   const entryDraft = {punches:punches.filter(p=>p&&p.length>0),shiftId,shiftStart,shiftEnd,lr,otA};
   const ds = useMemo(()=>calcDay(absent?{absent:true,shiftId,shiftStart,shiftEnd}:entryDraft,yr,mo,day),[punches,absent,shiftId,shiftStart,shiftEnd,lr,otA,yr,mo,day]);
 
@@ -257,7 +243,6 @@ function DayModal({yr,mo,day,entry,shiftConfig,onSave,onClose}) {
           <div>
             <div style={{fontSize:16,fontWeight:700,color:C.textBright}}>{dateStr}</div>
             <div style={{fontSize:11,color:C.textDim,marginTop:2}}>
-              {isSun?"Sunday — Holiday (All Work Counts as OT)":isSat?`Saturday — Half Day (${fmtClock(ds.shift.start)} – ${fmtClock(getSatEnd(ds.shift))})`:`Weekday — ${getShiftLabel(ds.shift)}`}
               {isSun?"Sunday — Holiday (All Work Counts as OT)":isSat?`Saturday — Half Day (${m2t(ds.shift.start)}–${m2t(getSatEnd(ds.shift)%1440)})`:`Weekday — ${getShiftLabel(ds.shift)}`}
               {isToday&&<span style={{color:C.amber,marginLeft:6}}>• Today</span>}
             </div>
@@ -330,7 +315,6 @@ function DayModal({yr,mo,day,entry,shiftConfig,onSave,onClose}) {
 
           {/* OT Banner */}
           {hasOT&&<div style={{background:otUi.bg,border:`1px solid ${otUi.border}`,borderRadius:12,padding:14,marginBottom:14}}>
-            <div style={{fontSize:13,color:otUi.accent,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {fmtClock(dayEnd)}</div>
             <div style={{fontSize:13,color:otUi.accent,fontWeight:700,marginBottom:8}}>⏰ You worked {fmtMins(ds.otMins)} extra after {m2t(dayEnd%1440)}</div>
             <div style={{fontSize:11,color:otUi.accent,marginBottom:10}}>{otUi.label}</div>
             <div style={{display:"flex",gap:8}}>
@@ -388,9 +372,9 @@ function DayModal({yr,mo,day,entry,shiftConfig,onSave,onClose}) {
 }
 
 // ─── Month Stats Calculator ───────────────────────────────────────────────────
-function calcMonthStats(yr,mo,att,salary,holidays=[],shiftConfig=DEFAULT_SHIFT) {
+function calcMonthStats(yr,mo,att,salary,holidays=[]) {
   const days = getDays(yr,mo);
-  const totalMins = getMonthMins(yr,mo,holidays,shiftConfig);
+  const totalMins = getMonthMins(yr,mo,holidays);
   const perMin = totalMins>0 ? salary/totalMins : 0;
   const dayEq = totalMins/540;
   const oneDaySal = dayEq>0 ? salary/dayEq : 0;
@@ -399,7 +383,7 @@ function calcMonthStats(yr,mo,att,salary,holidays=[],shiftConfig=DEFAULT_SHIFT) 
   for(let d=1;d<=days;d++){
     const key=`${yr}-${String(mo+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
     const e = att[key]||null;
-    const ds = calcDay(e,yr,mo,d,shiftConfig);
+    const ds = calcDay(e,yr,mo,d);
     dr.push({d,...ds});
     ot+=ds.ot;
     if(!ds.isSun){ worked+=ds.worked;ded+=ds.deducted;lm+=ds.lm;personalTotal+=ds.personalMins; unapprovedOtMins+=Math.max(0,ds.otMins-ds.ot); if(ds.status==="absent")absences++; }
@@ -579,9 +563,9 @@ function StatsView({stats,salary}) {
 }
 
 // ─── Year View ────────────────────────────────────────────────────────────────
-function YearView({yr,setYr,att,salary,shiftConfig}) {
+function YearView({yr,setYr,att,salary}) {
   const months = MONTHS.map((_,i)=>{
-    const s=calcMonthStats(yr,i,att,salary,[],shiftConfig);
+    const s=calcMonthStats(yr,i,att,salary);
     const pct=s.totalMins>0?Math.min(100,(s.worked/s.totalMins)*100):0;
     return{mo:i,...s,pct};
   });
@@ -706,7 +690,7 @@ async function cloudCreate(k,p){const r=await fetch(`${JBIN}/b`,{method:"POST",h
 async function cloudUpdate(k,b,p){const r=await fetch(`${JBIN}/b/${b}`,{method:"PUT",headers:{"X-Master-Key":k,"Content-Type":"application/json"},body:JSON.stringify(p)});if(!r.ok)throw new Error();}
 
 // ─── Settings View ────────────────────────────────────────────────────────────
-function SettingsView({salary,setSalary,shiftConfig,setShiftConfig,clearAll,importData,apiKey,setApiKey,binId,setBinId,syncStatus,syncErr,lastSync,manualSync,onCloudSaved}) {
+function SettingsView({salary,setSalary,clearAll,importData,apiKey,setApiKey,binId,setBinId,syncStatus,syncErr,lastSync,manualSync,onCloudSaved}) {
   const [v,setV]=useState(salary);
   const [saved,setSaved]=useState(false);
   const [kInput,setKInput]=useState(apiKey);
@@ -714,17 +698,6 @@ function SettingsView({salary,setSalary,shiftConfig,setShiftConfig,clearAll,impo
   const [cSaved,setCSaved]=useState(false);
   const [impStatus,setImpStatus]=useState(null);
   const [importing,setImporting]=useState(false);
-  const [shiftDraft,setShiftDraft]=useState(shiftConfig);
-  const [shiftSaved,setShiftSaved]=useState(false);
-  const currentShift = getShift(shiftDraft);
-  const currentSatEnd = getSatEnd(currentShift);
-  const saveShift = () => {
-    setShiftConfig(shiftDraft);
-    setShiftSaved(true);
-    setTimeout(()=>setShiftSaved(false),2000);
-  };
-
-  useEffect(()=>setShiftDraft(shiftConfig),[shiftConfig]);
 
   const saveCloud = () => {
     const k=kInput.trim(), b=bInput.trim();
@@ -768,7 +741,6 @@ function SettingsView({salary,setSalary,shiftConfig,setShiftConfig,clearAll,impo
           {saved?"✅ Saved!":"Save Salary"}
         </button>
       </Card>
-
 
       <SecTitle>☁️ Cloud Sync (PC + Mobile)</SecTitle>
       <Card>
@@ -843,33 +815,7 @@ function SettingsView({salary,setSalary,shiftConfig,setShiftConfig,clearAll,impo
 
       <SecTitle>📋 Office Rules</SecTitle>
       <Card>
-        <div style={{fontSize:12,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:0.8,marginBottom:14}}>🕘 Shift Settings</div>
-        <Label>Default Shift</Label>
-        <select value={shiftDraft.shiftId} onChange={e=>setShiftDraft({...shiftDraft,shiftId:e.target.value})} style={{marginBottom:shiftDraft.shiftId==="custom"?12:10}}>
-          {SHIFT_PRESETS.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
-        </select>
-        {shiftDraft.shiftId==="custom"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
-          <div>
-            <Label>Start</Label>
-            <input type="time" value={shiftDraft.shiftStart} onChange={e=>{
-              const start=e.target.value, startMins=t2m(start);
-              setShiftDraft({...shiftDraft,shiftStart:start,shiftEnd:startMins==null?shiftDraft.shiftEnd:m2t((startMins+(WORK_END-WORK_START))%1440)});
-            }}/>
-          </div>
-          <div>
-            <Label>End <span style={{fontWeight:400,fontSize:10}}>(auto)</span></Label>
-            <input type="time" value={shiftDraft.shiftEnd} onChange={e=>setShiftDraft({...shiftDraft,shiftEnd:e.target.value})}/>
-          </div>
-        </div>}
-        <div style={{background:C.card2,borderRadius:10,padding:"10px 12px",fontSize:12,color:C.textDim,lineHeight:1.6,marginBottom:12}}>
-          Office Hours: <strong style={{color:C.textBright}}>{getShiftLabel(currentShift)}</strong><br/>
-          Saturday Half Day: <strong style={{color:C.textBright}}>{fmtClock(currentShift.start)} – {fmtClock(currentSatEnd)}</strong>
-        </div>
-        <button onClick={saveShift} style={{width:"100%",padding:13,borderRadius:12,border:"none",cursor:"pointer",background:shiftSaved?C.green:C.amber,color:"#000",fontWeight:800,fontSize:14,transition:"background 0.3s",marginBottom:14}}>
-          {shiftSaved?"✅ Shift Saved!":"Save Shift"}
-        </button>
-        <div style={{fontSize:12,fontWeight:700,color:C.textDim,textTransform:"uppercase",letterSpacing:0.8,marginBottom:6,paddingTop:2}}>📋 Rule Details</div>
-        {[["Office Hours",`Mon–Fri: ${getShiftLabel(getShift(shiftConfig))}`],["Saturday",`Half Day: ${fmtClock(getShift(shiftConfig).start)} – ${fmtClock(getSatEnd(getShift(shiftConfig)))}`],["Sunday","Full Holiday 🌴"],["Lunch","After 12 PM, max 1 hour (auto-detected)"],["Lunch Min Gap","≥ 30 min to count as lunch"],["Late Mark","15+ min late = 1 mark"],["Max LM/Day","2 per day"],["2hr+ Late","Counts as leave (or file report)"],["Paid Leaves","2 per month"],["10 Late Marks","= 1 day salary cut"],["OT",`After ${fmtClock(getShift(shiftConfig).end)} — approval required`],["Unused Leave","= Paid out as bonus 🎉"]].map(([k,vl])=>(
+        {[["Office Hours","Mon–Fri: 9:00 AM – 7:00 PM"],["Saturday","Half Day: 9:00 AM – 1:30 PM"],["Sunday","Full Holiday 🌴"],["Lunch","After 12 PM, max 1 hour (auto-detected)"],["Lunch Min Gap","≥ 30 min to count as lunch"],["Late Mark","15+ min late = 1 mark"],["Max LM/Day","2 per day"],["2hr+ Late","Counts as leave (or file report)"],["Paid Leaves","2 per month"],["10 Late Marks","= 1 day salary cut"],["OT","After 7 PM — approval required"],["Unused Leave","= Paid out as bonus 🎉"]].map(([k,vl])=>(
           <div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",padding:"8px 0",borderBottom:`1px solid ${C.border}22`}}>
             <span style={{fontSize:12,color:C.textDim,flex:1}}>{k}</span>
             <span style={{fontSize:12,color:C.textBright,fontWeight:500,textAlign:"right",flex:1.5,paddingLeft:8}}>{vl}</span>
@@ -928,7 +874,6 @@ function App() {
   const [selDay,setSelDay]=useState(null);
   const [showModal,setShowModal]=useState(false);
   const [salary,setSalaryState]=useState(()=>+(localStorage.getItem("hr_sal")||30000));
-  const [shiftConfig,setShiftConfigState]=useState(()=>{try{return JSON.parse(localStorage.getItem("hr_shift")||JSON.stringify(DEFAULT_SHIFT));}catch{return DEFAULT_SHIFT;}});
   const [att,setAtt]=useState(()=>{try{return JSON.parse(localStorage.getItem("hr_att")||"{}");}catch{return{};}});
   const [apiKey,setApiKeyState]=useState(()=>localStorage.getItem("hr_apikey")||"");
   const [binId,setBinIdState]=useState(()=>localStorage.getItem("hr_binid")||"");
@@ -941,7 +886,6 @@ function App() {
   const binIdRef=useRef(binId);
   const attRef=useRef(att);
   const salaryRef=useRef(salary);
-  const shiftRef=useRef(shiftConfig);
 
   const setApiKey=v=>{setApiKeyState(v);localStorage.setItem("hr_apikey",v);apiKeyRef.current=v;};
   const setBinId=v=>{setBinIdState(v);localStorage.setItem("hr_binid",v);binIdRef.current=v;};
@@ -951,7 +895,6 @@ function App() {
   useEffect(()=>{binIdRef.current=binId;},[binId]);
   useEffect(()=>{attRef.current=att;},[att]);
   useEffect(()=>{salaryRef.current=salary;},[salary]);
-  useEffect(()=>{shiftRef.current=shiftConfig;},[shiftConfig]);
 
   // ── Load from cloud on mount AND whenever API key+BinId become available ──
   const doCloudLoad=useCallback(async(k,b)=>{
@@ -961,7 +904,6 @@ function App() {
       const data=await cloudLoad(k,b);
       if(data?.att){setAtt(data.att);localStorage.setItem("hr_att",JSON.stringify(data.att));attRef.current=data.att;}
       if(data?.salary){setSalaryState(data.salary);localStorage.setItem("hr_sal",String(data.salary));salaryRef.current=data.salary;}
-      if(data?.shift){setShiftConfigState(data.shift);localStorage.setItem("hr_shift",JSON.stringify(data.shift));shiftRef.current=data.shift;}
       setSyncStatus("success");
       const t=new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);localStorage.setItem("hr_lastsync",t);
@@ -975,13 +917,13 @@ function App() {
   useEffect(()=>{doCloudLoad(apiKeyRef.current,binIdRef.current);},[]);
 
   // ── Schedule cloud save (uses refs — never stale) ──
-  const scheduleSave=useCallback((newAtt,sal,shift=shiftRef.current)=>{
+  const scheduleSave=useCallback((newAtt,sal)=>{
     const k=apiKeyRef.current;
     if(!k) return;
     clearTimeout(syncTimer); setSyncStatus("syncing"); setSyncErr("");
     syncTimer=setTimeout(async()=>{
       try{
-        const payload={att:newAtt,salary:sal,shift};
+        const payload={att:newAtt,salary:sal};
         let bid=binIdRef.current;
         if(!bid){
           bid=await cloudCreate(k,payload);
@@ -1005,11 +947,10 @@ function App() {
   const setE=(y,m,d,data)=>{
     const u={...attRef.current};
     if(data) u[key(y,m,d)]=data; else delete u[key(y,m,d)];
-    setAtt(u); localStorage.setItem("hr_att",JSON.stringify(u)); scheduleSave(u,salaryRef.current,shiftRef.current);
+    setAtt(u); localStorage.setItem("hr_att",JSON.stringify(u)); scheduleSave(u,salaryRef.current);
   };
-  const setSalary=v=>{setSalaryState(v);localStorage.setItem("hr_sal",String(v));scheduleSave(attRef.current,v,shiftRef.current);};
-  const setShiftConfig=v=>{setShiftConfigState(v);localStorage.setItem("hr_shift",JSON.stringify(v));shiftRef.current=v;scheduleSave(attRef.current,salaryRef.current,v);};
-  const clearAll=()=>{setAtt({});localStorage.removeItem("hr_att");scheduleSave({},salaryRef.current,shiftRef.current);};
+  const setSalary=v=>{setSalaryState(v);localStorage.setItem("hr_sal",String(v));scheduleSave(attRef.current,v);};
+  const clearAll=()=>{setAtt({});localStorage.removeItem("hr_att");scheduleSave({},salaryRef.current);};
 
   const importData=(rows)=>{
     let ok=0,skip=0,newAtt;
@@ -1022,13 +963,13 @@ function App() {
       }
       localStorage.setItem("hr_att",JSON.stringify(u)); newAtt=u; return u;
     });
-    setTimeout(()=>scheduleSave(newAtt||attRef.current,salaryRef.current,shiftRef.current),200);
+    setTimeout(()=>scheduleSave(newAtt||attRef.current,salaryRef.current),200);
     return{ok,skip};
   };
 
   const manualSync=()=>doCloudLoad(apiKeyRef.current,binIdRef.current);
 
-  const stats=useMemo(()=>calcMonthStats(yr,mo,att,salary,[],shiftConfig),[att,yr,mo,salary,shiftConfig]);
+  const stats=useMemo(()=>calcMonthStats(yr,mo,att,salary),[att,yr,mo,salary]);
 
   return (
     <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'Syne',sans-serif",color:C.text,maxWidth:480,margin:"0 auto"}}>
@@ -1036,14 +977,14 @@ function App() {
       <main>
         {view==="month"&&<MonthView yr={yr} mo={mo} stats={stats} getE={getE} openDay={d=>{setSelDay(d);setShowModal(true);}} now={now}/>}
         {view==="stats"&&<StatsView stats={stats} salary={salary}/>}
-        {view==="year"&&<YearView yr={yr} setYr={setYr} att={att} salary={salary} shiftConfig={shiftConfig}/>}
-        {view==="settings"&&<SettingsView salary={salary} setSalary={setSalary} shiftConfig={shiftConfig} setShiftConfig={setShiftConfig} clearAll={clearAll} importData={importData}
+        {view==="year"&&<YearView yr={yr} setYr={setYr} att={att} salary={salary}/>}
+        {view==="settings"&&<SettingsView salary={salary} setSalary={setSalary} clearAll={clearAll} importData={importData}
           apiKey={apiKey} setApiKey={setApiKey} binId={binId} setBinId={setBinId}
           syncStatus={syncStatus} syncErr={syncErr} lastSync={lastSync} manualSync={manualSync}
           onCloudSaved={(k,b)=>doCloudLoad(k,b)}/>}
       </main>
       {showModal&&selDay&&(
-        <DayModal yr={yr} mo={mo} day={selDay} entry={getE(yr,mo,selDay)} shiftConfig={shiftConfig}
+        <DayModal yr={yr} mo={mo} day={selDay} entry={getE(yr,mo,selDay)}
           onSave={data=>{setE(yr,mo,selDay,data);setShowModal(false);}}
           onClose={()=>setShowModal(false)}/>
       )}
